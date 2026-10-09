@@ -1,0 +1,14 @@
+{
+  "name": "pnp-server",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "tsx --test src/*.test.ts"
+  },
+  "dependencies": {
+    "@fastify/static": "^8.2.0",
+    "fastify": "^5.6.0",
+    "socket.io": "^4.8.1",
+    "tsx": "^4.20.0"
+  }
+}

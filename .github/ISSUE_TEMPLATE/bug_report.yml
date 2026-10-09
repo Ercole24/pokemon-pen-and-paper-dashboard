@@ -1,0 +1,41 @@
+# Modulo per segnalare un bug. La dashboard e il launcher lo aprono con versione e sistema già scritti
+# (parametri ?version=…&system=… nell'indirizzo).
+name: Bug report / Segnala un bug
+description: Something does not work as expected / Qualcosa non funziona come dovrebbe
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened? / Cosa è successo?
+      description: Include the error message, if any. / Se c'è un messaggio d'errore, copialo qui.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce / Come riprodurlo
+      placeholder: |
+        1. Open… / Apri…
+        2. Click… / Clicca…
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect? / Cosa ti aspettavi?
+  - type: input
+    id: version
+    attributes:
+      label: Version / Versione
+    validations:
+      required: true
+  - type: input
+    id: system
+    attributes:
+      label: System and browser / Sistema e browser
+  - type: textarea
+    id: logs
+    attributes:
+      label: Screenshots or logs / Screenshot o log
+      description: "Logs: docker compose logs (in the install folder / nella cartella d'installazione)"

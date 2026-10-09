@@ -1,0 +1,37 @@
+# Avvio facile: icona creata dall'installer (scripts/launch.mjs). A mano: docker compose up -d   ·   Dashboard http://<ip-del-pc>:3000   ·   Showdown http://<ip-del-pc>:8000
+name: pnp-dashboard
+x-secret: &secret
+  PNP_SECRET_FILE: /app/shared/.pnp-secret  # creato al primo avvio, condiviso tra i due container
+# versioni di Showdown fissate in .env (aggiorna con: node scripts/update-showdown.mjs)
+x-refs: &refs
+  SHOWDOWN_REF: ${SHOWDOWN_REF:-master}
+  CLIENT_REF: ${CLIENT_REF:-master}
+  PNP_ASSETS: &assets ${PNP_ASSETS:-https://play.pokemonshowdown.com/}  # immagini e audio (scelto nel launcher)
+
+services:
+  showdown:
+    build: {context: ., target: showdown, args: *refs}
+    image: pnp-dashboard-showdown
+    restart: on-failure  # uscita pulita (spegnimento automatico) = container fermo
+    ports: ["8000:8000"]
+    environment: *secret
+    volumes: [secret:/app/shared]
+
+  app:
+    build: {context: ., target: app, args: *refs}
+    image: pnp-dashboard-app
+    restart: on-failure  # uscita pulita (spegnimento automatico) = container fermo
+    depends_on: [showdown]
+    ports: ["3000:3000"]
+    environment:
+      <<: *secret
+      SHOWDOWN_WS: ws://showdown:8000/showdown/websocket
+      PNP_ASSETS: *assets
+      PNP_AUTO_STOP: ${PNP_AUTO_STOP:-2}  # minuti senza schede del master aperte prima di spegnere tutto (0 = mai)
+    volumes:
+      - secret:/app/shared
+      # campagne, mappe e tileset: una cartella sul PC, così sopravvivono agli aggiornamenti
+      - ${PNP_DATA_DIR:-./data}:/app/data
+
+volumes:
+  secret:

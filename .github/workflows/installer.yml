@@ -1,0 +1,35 @@
+# Installer: compila il .exe per Windows (Inno Setup, già presente su windows-latest).
+# A ogni tag v* (uguale a "version" di package.json) crea la release con pnp-dashboard-setup.exe, install.sh (Linux) e install-mac.command (Mac, stesso script).
+name: installer
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+      # il launcher confronta il tag della release con "version" di package.json: devono coincidere
+      - name: Tag = versione
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        run: |
+          v=$(node -p "require('./package.json').version")
+          [ "${GITHUB_REF_NAME#v}" = "$v" ] || { echo "Il tag $GITHUB_REF_NAME non coincide con la versione $v di package.json"; exit 1; }
+      - name: Compila il .exe
+        run: '& "${env:ProgramFiles(x86)}\Inno Setup 6\iscc.exe" installer\windows\pnp-dashboard.iss'
+      - name: Script per Linux e Mac
+        shell: bash
+        run: cp installer/install.sh installer/windows/Output/install.sh && cp installer/install.sh installer/windows/Output/install-mac.command
+      - uses: actions/upload-artifact@v5
+        with:
+          name: installer
+          path: installer/windows/Output/*
+      - if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2 (commit fisso: l'action ha accesso in scrittura al repo)
+        with:
+          files: installer/windows/Output/*
+          generate_release_notes: true  # note = elenco dei commit (si vedono nel launcher sotto "Novità")

@@ -1,0 +1,55 @@
+Pokémon Pen & Paper Dashboard
+Copyright 2026 Ercole24 (https://github.com/Ercole24)
+https://github.com/Ercole24/pokemon-pen-and-paper-dashboard
+
+Ercole24 is the original author of the base code of this project.
+The code is licensed under the Apache License, Version 2.0 (see LICENSE).
+Anyone who redistributes this project or a work based on it must keep this NOTICE file
+and credit Ercole24 as the creator of the original code (Apache License 2.0, section 4).
+
+--------------------------------------------------------------------------------
+What the license does NOT cover
+--------------------------------------------------------------------------------
+The Apache License applies only to the original code written for this project.
+It grants no rights over the following, which belong to their owners:
+
+- Pokémon. Pokémon and all related names, characters, images, sounds and trademarks are
+  the property of Nintendo, The Pokémon Company, Game Freak and Creatures Inc.
+  This is an unofficial, free, non-commercial fan project. It is not affiliated with,
+  sponsored or endorsed by Nintendo, The Pokémon Company, Game Freak or Creatures Inc.
+  This repository contains no images, audio or other files from the games.
+
+- Pokémon Pen & Paper Version by Sage G.C. (https://sagegc.itch.io/pkmn). The rules, classes,
+  tables and story prompts used by the dashboard come from this game and belong to its author.
+  They are used with credit, to play their game; this project is not affiliated with them.
+
+--------------------------------------------------------------------------------
+Third-party software and data
+--------------------------------------------------------------------------------
+Not stored in this repository: downloaded when the Docker images are built, or loaded
+while playing.
+
+- Pokémon Showdown (battle server, Pokémon/move data)
+  Copyright (c) 2011-2026 Guangcong Luo and other contributors, MIT License
+  https://github.com/smogon/pokemon-showdown
+  The plugin in showdown-plugin/pnp.ts is added to it at build time.
+
+- Pokémon Showdown client (battle page)
+  Copyright Guangcong Luo and other contributors, GNU Affero General Public License v3.0
+  https://github.com/smogon/pokemon-showdown-client
+  Built from source at the commit set in .env. The page served on port 8000 is modified by
+  showdown-plugin/client.mjs (address of the server, images and audio from the internet,
+  no login server, no news): the source of these modifications is this repository.
+
+- Sprites, effects, music and cries: loaded at runtime from play.pokemonshowdown.com
+  (Pokémon Showdown); the images and sounds themselves are © Nintendo / The Pokémon Company /
+  Game Freak / Creatures Inc.
+
+- Gym badge images: loaded at runtime from PokeAPI/sprites
+  https://github.com/PokeAPI/sprites (images © Nintendo / The Pokémon Company).
+
+- Fonts in web/public/fonts, SIL Open Font License 1.1 (full text in web/public/fonts/OFL.txt):
+  Atkinson Hyperlegible, Braille Institute of America; Press Start 2P, CodeMan38.
+
+- npm packages (React, Fastify, socket.io, Vite, lucide and others): each under its own license,
+  listed in package-lock.json.

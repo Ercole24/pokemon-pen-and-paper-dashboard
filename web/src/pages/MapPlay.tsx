@@ -1,0 +1,345 @@
+// Mappa durante la partita.
+// - Pagina del master (/c/<id>/mappe/<mappa>/gioca): tutta la mappa, segnalini trascinabili, posizionamento degli
+//   Allenatori con un clic, clic su porte (cambia mappa) e zone (avvia un incontro), dialoghi dei PNG e sfida.
+// - MapView è usata anche dal telefono (pagina Player) con gm=false: visuale limitata attorno al proprio Allenatore,
+//   movimento solo verso le caselle raggiungibili.
+// I segnalini si spostano mandando l'evento 'token' a socket.io: il server li salva nella mappa e li manda a tutti.
+import {useEffect, useRef, useState} from 'react';
+import {ArrowLeft, DoorOpen, Move, Sprout, Swords, UserX, ZoomIn, ZoomOut} from 'lucide-react';
+import {Link, useNavigate, useParams} from 'react-router-dom';
+import {api, socket, useStore, type MapDoc} from '../api';
+import {drawMap, loadImage} from '../mapcore';
+import {EncounterButtons} from '../components';
+import {npcSprite} from './NpcTeams';
+import {spriteForTrainer, trainerSpriteUrl} from '../trainers';
+import {t, tj} from '../i18n';
+
+/** Nome semplificato per confrontare mappa e zona (minuscole, senza parentesi né simboli). */
+const zoneKey = (n: string) => n.toLowerCase().replace(/\(.*?\)/g, '').replace(/[^a-z0-9]/g, '');
+
+/** Pagina del master: intestazione con cambio mappa e la mappa; segna la mappa come "attiva" (quella che vedono i telefoni). */
+export default function MapPlay() {
+  const {mid} = useParams();
+  const {map, campaign, updateCampaign} = useStore();
+  const nav = useNavigate();
+  const current = map.find(m => m.id === mid);
+  useEffect(() => { if (mid && campaign.activeMap !== mid) updateCampaign({activeMap: mid}); }, [mid]);
+  if (!current) return <div className="page">{t('Mappa non trovata.')}</div>;
+  return (
+    <div className="play-page">
+      <header className="editor-bar">
+        <Link to="../.." relative="path" className="btn-icon" aria-label={t('Indietro')}><ArrowLeft /></Link>
+        <h1 className="play-title">{current.name}</h1>
+        <select value={mid} onChange={e => nav(`../../${e.target.value}/gioca`, {relative: 'path'})} aria-label={t('Cambia mappa')}>
+          {map.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
+        </select>
+        <Link className="btn" to=".." relative="path">{t('Modifica')}</Link>
+      </header>
+      <MapView map={current} gm onWarp={id => nav(`../../${id}/gioca`, {relative: 'path'})} />
+    </div>
+  );
+}
+
+/** Immagine dello sprite di un PNG sulla mappa (dalla sua squadra o dallo sprite scelto). */
+export function useNpcImage(npcteam: any[], gen: number, redraw: () => void) {
+  return (ob: {npcTeam?: string, sprite?: string}) => {
+    const t = npcteam.find(x => x.id === ob.npcTeam);
+    const name = t ? spriteForTrainer({sprite: npcSprite(t)}, gen) : ob.sprite ? spriteForTrainer({sprite: ob.sprite}, gen) : '';
+    return name ? loadImage(trainerSpriteUrl(name), redraw) : null;
+  };
+}
+
+/** Segnalino di un Allenatore sulla mappa. */
+type Tok = {id: string, x: number, y: number, label: string, color: string};
+
+/** Sprite degli Allenatori già caricati. */
+const spriteImgs = new Map<string, HTMLImageElement>();
+function spriteImg(url: string, onLoad: () => void) {
+  let img = spriteImgs.get(url);
+  if (!img) { img = new Image(); img.src = url; spriteImgs.set(url, img); }
+  if (!img.complete) img.addEventListener('load', onLoad, {once: true});
+  return img;
+}
+
+/** Caselle raggiungibili a passi (4 direzioni), senza attraversare collisioni né fermarsi su altri segnalini. */
+export function reachable(map: MapDoc, from: {x: number, y: number}, range: number, occupied: Set<string>) {
+  const coll = map.layers.find(l => l.type === 'collision');
+  const solid = new Set(map.objects.filter(o => o.kind === 'npc' || (o.kind === 'item' && !o.hidden)).map(o => `${o.x},${o.y}`));
+  const blocked = (x: number, y: number) => x < 0 || y < 0 || x >= map.width || y >= map.height || !!coll?.data[y * map.width + x] || solid.has(`${x},${y}`);
+  const dist = new Map<string, number>([[`${from.x},${from.y}`, 0]]);
+  const queue = [from];
+  while (queue.length) {
+    const c = queue.shift()!;
+    const d = dist.get(`${c.x},${c.y}`)!;
+    if (d >= range) continue;
+    for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      const nx = c.x + dx, ny = c.y + dy, k = `${nx},${ny}`;
+      if (dist.has(k) || blocked(nx, ny)) continue;
+      dist.set(k, d + 1);
+      queue.push({x: nx, y: ny});
+    }
+  }
+  dist.delete(`${from.x},${from.y}`);
+  for (const k of occupied) dist.delete(k);
+  return new Set(dist.keys());
+}
+
+/**
+ * Mappa al tavolo.
+ * Master: vede tutta la mappa, trascina qualsiasi segnalino, clic su zone e porte.
+ * Giocatore: visuale attorno al proprio Allenatore; tocca il personaggio e poi una casella evidenziata per muoverti.
+ */
+/** Tiene il menu dentro lo schermo: vicino al bordo basso si apre verso l'alto, ai lati rientra. */
+const fitPopover = (el: HTMLDivElement | null) => {
+  if (!el) return;
+  // misure senza transform (l'animazione d'entrata le falserebbe): il menu è centrato sul punto cliccato
+  const x = parseFloat(el.style.left), y = parseFloat(el.style.top), w = el.offsetWidth, h = el.offsetHeight, pad = 8;
+  const up = y + 10 + h > innerHeight - pad;
+  const dx = Math.max(pad - (x - w / 2), Math.min(0, innerWidth - pad - (x + w / 2)));
+  el.style.transform = `translate(calc(-50% + ${dx}px), ${up ? 'calc(-100% - 10px)' : '10px'})`;
+};
+
+/** La mappa interattiva (master o giocatore). */
+export function MapView({map, gm, myToken, onWarp}: {map: MapDoc, gm?: boolean, myToken?: string, onWarp?: (mapId: string) => void}) {
+  const {tileset, trainer, zone, campaign, npcteam} = useStore();
+  const nav = useNavigate();
+  const npcImage = useNpcImage(npcteam, campaign.gen, () => force(n => n + 1));
+  const wrap = useRef<HTMLDivElement>(null);
+  const cv = useRef<HTMLCanvasElement>(null);
+  const [box, setBox] = useState({w: 800, h: 600});
+  const [zoomMul, setZoomMul] = useState(1);
+  const [overlays, setOverlays] = useState(false);
+  // segnalino preso dal master: start = casella di partenza (se non si sposta, il clic apre il suo menu)
+  const [dragTok, setDragTok] = useState<{id: string, x: number, y: number, start: string} | null>(null);
+  const [selected, setSelected] = useState(false);
+  const [menu, setMenu] = useState<{x: number, y: number, zoneId?: string, warp?: MapDoc['objects'][0], tokenId?: string} | null>(null);
+  // il menu si chiude toccando fuori (la mappa lo gestisce già in onDown) o con Esc
+  const pop = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!menu) return;
+    const out = (e: PointerEvent) => { if (!pop.current?.contains(e.target as Node) && e.target !== cv.current) setMenu(null); };
+    const esc = (e: KeyboardEvent) => { if (e.key === 'Escape') setMenu(null); };
+    addEventListener('pointerdown', out);
+    addEventListener('keydown', esc);
+    return () => { removeEventListener('pointerdown', out); removeEventListener('keydown', esc); };
+  }, [menu]);
+  const [talk, setTalk] = useState<MapDoc['objects'][0] | null>(null);
+  // master: «Posiziona allenatori» -> allenatore scelto da mettere con un clic (null = modalità spenta)
+  const [placing, setPlacing] = useState<string | null>(null);
+  const [, force] = useState(0);
+  const tokens: Tok[] = map.tokens || [];
+  const me = tokens.find(t => t.id === myToken);
+  const range = campaign.moveRange ?? 4;
+  // caselle visibili in larghezza per il giocatore: regolabile, mai tutta la mappa
+  const maxView = Math.max(9, Math.min(25, map.width - 1, Math.round(map.width * 0.7)));
+  const [view, setView] = useState(() => { try { return +(localStorage.getItem('pnp-view') || 15); } catch { return 15; } });
+  const VIEW = Math.max(9, Math.min(maxView, view));
+  /** Giocatore: più o meno caselle visibili, ricordato nel browser. */
+  const zoomView = (d: number) => { const v = Math.max(9, Math.min(maxView, VIEW + d)); setView(v); try { localStorage.setItem('pnp-view', String(v)); } catch {} };
+
+  useEffect(() => {
+    const el = wrap.current;
+    if (!el) return;
+    const ro = new ResizeObserver(() => setBox({w: el.clientWidth, h: el.clientHeight}));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  // scala: Master adatta tutta la mappa; giocatore mostra ~11 caselle in larghezza
+  const T = gm
+    ? Math.max(4, Math.min(box.w / map.width, box.h / map.height) * zoomMul)
+    : Math.max(8, Math.floor(box.w / Math.min(VIEW, map.width)));
+  const viewW = gm ? map.width : Math.min(map.width, Math.floor(box.w / T));
+  // mai tutta la mappa: al massimo il 70% anche in altezza, e non più alta di 1,5 volte la larghezza visibile
+  const viewH = gm ? map.height : Math.max(1, Math.min(Math.floor(box.h / T), Math.round(VIEW * 1.5), Math.max(9, Math.round(map.height * .7)), map.height));
+  const cam = gm || !me ? {x: 0, y: 0} : {
+    x: Math.max(0, Math.min(map.width - viewW, me.x - Math.floor(viewW / 2))),
+    y: Math.max(0, Math.min(map.height - viewH, me.y - Math.floor(viewH / 2))),
+  };
+  const occupied = new Set(tokens.filter(t => t.id !== myToken).map(t => `${t.x},${t.y}`));
+  const moves = !gm && me && selected ? reachable(map, me, range, occupied) : null;
+
+  useEffect(() => {
+    const c = cv.current;
+    if (!c) return;
+    c.width = Math.round(viewW * T); c.height = Math.round(viewH * T);
+    const ctx = c.getContext('2d')!;
+    const redraw = () => force(n => n + 1);
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, c.width, c.height);
+    ctx.translate(-cam.x * T, -cam.y * T);
+    const zoomTiles = T / map.tileSize;
+    const above = new Set(map.layers.map((l, i) => /sopra|above/i.test(l.name) ? i : -1).filter(i => i >= 0)); // "Sopra i personaggi" / "Above characters"
+    drawMap(ctx, map, tileset, {zoom: zoomTiles, collision: gm && overlays, zones: gm && overlays, objects: gm, playerObjects: !gm, hidden: above, noClear: true, npcImage}, redraw);
+    if (moves) {
+      ctx.fillStyle = 'rgba(242, 194, 48, .38)';
+      ctx.strokeStyle = 'rgba(27, 32, 51, .55)';
+      ctx.lineWidth = Math.max(1, T * .04);
+      for (const k of moves) {
+        const [x, y] = k.split(',').map(Number);
+        ctx.fillRect(x * T + 1, y * T + 1, T - 2, T - 2);
+        ctx.beginPath(); ctx.arc((x + .5) * T, (y + .5) * T, T * .12, 0, Math.PI * 2); ctx.fillStyle = 'rgba(27, 32, 51, .55)'; ctx.fill(); ctx.fillStyle = 'rgba(242, 194, 48, .38)';
+      }
+    }
+    // segnalini: sprite dell'Allenatore in piedi sulla casella, nome sotto
+    const sorted = [...tokens].sort((a, b) => a.y - b.y);
+    for (const t of sorted) {
+      const p = dragTok?.id === t.id ? dragTok : t;
+      const tr = trainer.find(x => x.id === t.id);
+      const url = tr ? trainerSpriteUrl(spriteForTrainer(tr, campaign.gen)) : '';
+      const cx = (p.x + .5) * T, base = (p.y + 1) * T;
+      ctx.fillStyle = 'rgba(0,0,0,.28)';
+      ctx.beginPath(); ctx.ellipse(cx, base - T * .1, T * .38, T * .14, 0, 0, Math.PI * 2); ctx.fill();
+      if (t.id === myToken && selected) {
+        ctx.strokeStyle = '#f2c230'; ctx.lineWidth = Math.max(2, T * .08);
+        ctx.beginPath(); ctx.ellipse(cx, base - T * .1, T * .44, T * .18, 0, 0, Math.PI * 2); ctx.stroke();
+      }
+      const img = url ? spriteImg(url, redraw) : null;
+      const S = T * 1.7;
+      ctx.imageSmoothingEnabled = false;
+      if (img?.complete && img.naturalWidth) ctx.drawImage(img, cx - S / 2, base - S + T * .05, S, S);
+      else {
+        ctx.fillStyle = t.color || '#d83a2c';
+        ctx.beginPath(); ctx.arc(cx, base - T / 2, T * .38, 0, Math.PI * 2); ctx.fill();
+      }
+      // sul telefono il nome si vede solo per il proprio personaggio (o quello selezionato), per non sovrapporsi
+      if (!gm && t.id !== myToken) continue;
+      const label = (tr?.name || t.label).toUpperCase();
+      const fs = Math.max(8, Math.min(13, T * .28));
+      ctx.font = `${fs}px PKPixel, monospace`;
+      const w = ctx.measureText(label).width + fs;
+      ctx.fillStyle = t.id === myToken ? '#d83a2c' : '#16213f';
+      ctx.beginPath(); ctx.roundRect(cx - w / 2, base + 2, w, fs * 1.7, 4); ctx.fill();
+      ctx.fillStyle = '#fff'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText(label, cx, base + 2 + fs * .9);
+    }
+    const all = new Set(map.layers.map((_, i) => i));
+    above.forEach(i => all.delete(i));
+    if (above.size) drawMap(ctx, map, tileset, {zoom: zoomTiles, hidden: all, noClear: true}, redraw);
+  });
+
+  /** Casella sotto il dito o il puntatore, tenendo conto della visuale (camera) del giocatore. */
+  const at = (e: React.PointerEvent) => {
+    const c = cv.current!, r = c.getBoundingClientRect();
+    const px = (e.clientX - r.left) * (c.width / r.width), py = (e.clientY - r.top) * (c.height / r.height);
+    return {x: Math.max(0, Math.min(map.width - 1, Math.floor(px / T) + cam.x)), y: Math.max(0, Math.min(map.height - 1, Math.floor(py / T) + cam.y))};
+  };
+  /** Sposta (o mette) un segnalino: lo manda al server, che lo salva e lo inoltra a tutti. */
+  const emitMove = (t: Tok, x: number, y: number) => socket.emit('token', {cid: campaign.id, mapId: map.id, token: {...t, x, y}});
+
+  /**
+   * Tocco/clic: dialogo di un PNG; giocatore: seleziona sé stesso o si muove; master: posiziona un Allenatore,
+   * trascina un segnalino, oppure apre il menu di porta/zona.
+   */
+  function onDown(e: React.PointerEvent) {
+    const p = at(e);
+    setMenu(null);
+    const npc = map.objects.find(o => o.kind === 'npc' && o.x === p.x && o.y === p.y);
+    if (npc && !(me && me.x === p.x && me.y === p.y)) { setTalk(npc); setSelected(false); return; }
+    setTalk(null);
+    if (!gm) {
+      if (!me) return;
+      if (p.x === me.x && p.y === me.y) { setSelected(s => !s); return; }
+      if (moves?.has(`${p.x},${p.y}`)) { emitMove(me, p.x, p.y); setSelected(false); return; }
+      setSelected(false);
+      return;
+    }
+    if (placing) {
+      const coll = map.layers.find(l => l.type === 'collision');
+      if (coll?.data[p.y * map.width + p.x] || tokens.some(t => t.x === p.x && t.y === p.y)) return; // casella bloccata o occupata
+      const who = trainer.find(x => x.id === placing)!;
+      emitMove({id: who.id!, label: who.name, color: '#d83a2c', x: 0, y: 0}, p.x, p.y);
+      const next = unplaced.find(x => x.id !== placing);
+      setPlacing(next?.id || null);
+      return;
+    }
+    const tok = [...tokens].reverse().find(t => t.x === p.x && t.y === p.y);
+    if (tok) { setDragTok({id: tok.id, ...p, start: `${p.x},${p.y}`}); (e.target as Element).setPointerCapture(e.pointerId); return; }
+    const warp = map.objects.find(o => o.kind === 'warp' && o.x === p.x && o.y === p.y && o.toMap);
+    const zl = map.layers.find(l => l.type === 'zone');
+    const zv = zl?.data[p.y * map.width + p.x];
+    // nessuna zona dipinta: vale la zona con lo stesso nome della mappa (solo esterni, gli interni hanno « · »)
+    const named = !zl?.data.some(Boolean) && !map.name.includes(' · ') ? zone.find(z => zoneKey(z.name) === zoneKey(map.name))?.id : undefined;
+    const zoneId = zv ? map.zoneRefs[zv - 1] : named;
+    setMenu(warp || zoneId ? {x: e.clientX, y: e.clientY, zoneId, warp} : null);
+  }
+  /** Trascinamento di un segnalino (master). */
+  function onMove(e: React.PointerEvent) {
+    if (!dragTok) return;
+    const p = at(e);
+    if (p.x !== dragTok.x || p.y !== dragTok.y) setDragTok({...dragTok, ...p});
+  }
+  /** Fine trascinamento: salva la nuova posizione; senza spostamento è un clic e apre il menu dell'Allenatore. */
+  function onUp(e: React.PointerEvent) {
+    if (!dragTok) return;
+    if (`${dragTok.x},${dragTok.y}` === dragTok.start) setMenu({x: e.clientX, y: e.clientY, tokenId: dragTok.id});
+    else emitMove(tokens.find(x => x.id === dragTok.id)!, dragTok.x, dragTok.y);
+    setDragTok(null);
+  }
+  /** Toglie un Allenatore dalla mappa; con again lo rimette subito in "Posiziona allenatori". */
+  function untoken(id: string, again = false) {
+    socket.emit('untoken', {cid: campaign.id, mapId: map.id, id});
+    setMenu(null);
+    if (again) setPlacing(id);
+  }
+
+  /** Allenatori non ancora sulla mappa (per "Posiziona allenatori"). */
+  const unplaced = trainer.filter(t => !tokens.some(k => k.id === t.id));
+
+  /** Incontro in una zona: genera il selvatico e apre la pagina Lotta con il Pokémon pronto. */
+  async function encounter(zoneId: string, method: string) {
+    const r = await api(`/c/${campaign.id}/encounter`, 'POST', {zoneId, method});
+    sessionStorage.setItem('pnp-wild', JSON.stringify(r.mon));
+    nav(`/c/${campaign.id}/lotta`);
+  }
+
+  return (
+    <div className={`mapview ${gm ? 'gm' : 'player-map'} ${placing ? 'placing' : ''}`}>
+      {gm ? (
+        <div className="mapview-tools row gap-s">
+          {placing ? <>
+            <span className="small">{tj('Clicca una casella per {name}', {name: <strong>{trainer.find(x => x.id === placing)?.name}</strong>})}</span>
+            {unplaced.map(t => <button key={t.id} className={`btn-s place-chip ${placing === t.id ? 'active' : ''}`} onClick={() => setPlacing(t.id!)} aria-pressed={placing === t.id}>
+              <img src={trainerSpriteUrl(spriteForTrainer(t, campaign.gen))} alt="" />{t.name}</button>)}
+            <button className="btn-s" onClick={() => setPlacing(null)}>{t('Fine')}</button>
+          </> : <button className="btn-s" disabled={!unplaced.length} title={unplaced.length ? '' : t('Tutti gli allenatori sono già sulla mappa')} onClick={() => setPlacing(unplaced[0]?.id || null)}>{t('Posiziona allenatori')}{unplaced.length ? ` (${unplaced.length})` : ''}</button>}
+          <label className="check small"><input type="checkbox" checked={overlays} onChange={e => setOverlays(e.target.checked)} /> {t('Mostra collisioni e zone')}</label>
+          <button className="btn-icon" onClick={() => setZoomMul(z => z / 1.25)} aria-label={t('Riduci')}><ZoomOut /></button>
+          <button className="btn-icon" onClick={() => setZoomMul(z => z * 1.25)} aria-label={t('Ingrandisci')}><ZoomIn /></button>
+        </div>
+      ) : me ? (
+        <div className="map-hint">
+          <span>{selected ? t('Tocca una casella evidenziata (fino a {n} passi).', {n: range}) : t('Tocca il tuo personaggio per muoverti.')}</span>
+          <span className="row gap-xs">
+            <button className="btn-icon" onClick={() => zoomView(2)} disabled={VIEW >= maxView} aria-label={t('Vedi più mappa')}><ZoomOut /></button>
+            <button className="btn-icon" onClick={() => zoomView(-2)} disabled={VIEW <= 9} aria-label={t('Avvicina')}><ZoomIn /></button>
+          </span>
+        </div>
+      ) : null}
+      <div className="mapview-canvas" ref={wrap}>
+        {!gm && !me
+          ? <p className="map-wait">{t('Il master ti sta per mettere sulla mappa…')}</p>
+          : <canvas ref={cv} onPointerDown={onDown} onPointerMove={onMove} onPointerUp={onUp} style={{touchAction: 'none'}} />}
+      </div>
+      {talk && (
+        <div className="dialog-box" onClick={() => setTalk(null)}>
+          <strong>{npcteam.find(x => x.id === talk.npcTeam)?.name || talk.label}</strong>
+          <p>{talk.text || '…'}</p>
+          {gm && talk.npcTeam && <button className="btn-primary" onClick={e => { e.stopPropagation(); sessionStorage.setItem('pnp-team', talk.npcTeam!); nav(`/c/${campaign.id}/lotta`); }}><Swords /> {t('Sfida')}</button>}
+          <span className="dialog-arrow" aria-hidden />
+        </div>
+      )}
+      {menu && (
+        <div className="popover" ref={el => { pop.current = el; fitPopover(el); }} style={{left: menu.x, top: menu.y}}>
+          {menu.tokenId && <><strong className="small">{tokens.find(x => x.id === menu.tokenId)?.label || t('Allenatore')}</strong>
+            <span className="small muted">{t('Trascinalo per spostarlo')}</span>
+            <button onClick={() => untoken(menu.tokenId!, true)}><Move /> {t('Riposiziona')}</button>
+            <button className="btn-danger" onClick={() => untoken(menu.tokenId!)}><UserX /> {t('Togli dalla mappa')}</button></>}
+          {menu.zoneId && <><strong className="small">{zone.find(z => z.id === menu.zoneId)?.name || t('Zona')}</strong>
+            <EncounterButtons zone={zone.find(z => z.id === menu.zoneId)} onPick={m => encounter(menu.zoneId!, m)} /></>}
+          {menu.warp && <button onClick={() => { setMenu(null); onWarp?.(menu.warp!.toMap!); }}><DoorOpen /> {menu.warp.label || t('Porta')}</button>}
+        </div>
+      )}
+    </div>
+  );
+}

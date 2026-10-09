@@ -1,0 +1,7 @@
+node_modules/
+showdown
+showdown-client/
+data/
+web/dist/
+*.log
+.launcher.json

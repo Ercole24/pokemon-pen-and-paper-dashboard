@@ -1,0 +1,16 @@
+{
+  "name": "pnp-dashboard",
+  "version": "1.0.0",
+  "private": true,
+  "author": "Ercole24 (https://github.com/Ercole24)",
+  "license": "Apache-2.0",
+  "type": "module",
+  "workspaces": ["server", "web"],
+  "scripts": {
+    "setup": "node scripts/setup.mjs",
+    "build": "npm run build -w web",
+    "start": "npm run build && node scripts/start.mjs",
+    "dev": "node scripts/start.mjs --dev",
+    "test": "npm test -w server"
+  }
+}

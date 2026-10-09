@@ -1,0 +1,270 @@
+<!doctype html>
+<!-- Finestra del launcher (servita da scripts/launch.mjs): stesso stile della dashboard (web/src/style.css). -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pokémon Pen &amp; Paper</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><circle cx='8' cy='8' r='7' fill='%23e3350d' stroke='%23222'/><path d='M1 8a7 7 0 0 0 14 0z' fill='%23fff' stroke='%23222'/><circle cx='8' cy='8' r='2.2' fill='%23fff' stroke='%23222'/></svg>">
+<link rel="stylesheet" href="/style.css">
+<style>
+  body { background: var(--wash-cover), var(--wash-base); }
+  .launcher { min-height: 100%; padding: 3.2rem 1.2rem 1.6rem; display: flex; flex-direction: column; gap: 1.2rem; max-width: 560px; margin: 0 auto; }
+  .launcher .home-hero { margin: 0; gap: 1rem; }
+  .launcher .home-hero h1 { font-size: 21px; -webkit-text-stroke-width: 7px; }
+  .launcher .home-hero p { margin-top: .4rem; font-size: .9rem; }
+  [hidden] { display: none !important; }
+
+  .play { width: 100%; font-size: 1.15rem; padding: .85em 1em; }
+
+  /* passi dell'avvio */
+  .steps { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: .55rem; }
+  .steps li { display: flex; flex-wrap: wrap; column-gap: .65rem; align-items: baseline; color: var(--muted); }
+  .steps li::before { content: ""; width: 10px; height: 10px; border-radius: 50%; background: var(--hair); flex-shrink: 0; transform: translateY(1px); }
+  .steps li.wait { color: var(--ink); font-weight: 700; }
+  .steps li.wait::before { background: var(--gold); box-shadow: 0 0 0 3px rgba(242, 194, 48, .3); animation: pulse 1s ease-in-out infinite alternate; }
+  .steps li.ok { color: var(--ink); }
+  .steps li.ok::before { background: #2fb457; box-shadow: 0 0 0 3px rgba(47, 180, 87, .2); }
+  .steps li.err::before { background: var(--red); }
+  .steps li small { flex-basis: 100%; padding-left: calc(10px + .65rem); font-weight: 400; color: var(--muted); overflow-wrap: anywhere; }
+  @keyframes pulse { to { opacity: .35; } }
+  @media (prefers-reduced-motion: reduce) { .steps li.wait::before { animation: none; } }
+  .log { font: .75rem/1.4 ui-monospace, monospace; color: var(--muted); background: var(--paper-2); border-radius: 6px; padding: .45em .6em;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-height: 1.9em; }
+  .log:empty { display: none; }
+  .ips { margin: 0; padding-left: 1.1rem; font-size: .9rem; }
+  .countdown { font: 13px/1.6 var(--pixel); color: var(--red-ink); }
+  .langs { position: fixed; top: 12px; right: 12px; display: flex; gap: .3rem; }
+  .langs button { padding: .3em .5em; font-size: .8rem; gap: .4em; }
+  .langs button[aria-pressed="true"] { background: var(--gold); }
+  .update { border-left: 4px solid var(--gold); padding-left: .8rem; display: flex; flex-direction: column; gap: .5rem; }
+  .update pre { white-space: pre-wrap; font-family: inherit; font-size: .85rem; margin: .3rem 0 0; max-height: 10rem; overflow: auto; }
+  .version { font-size: .8rem; }
+</style>
+</head>
+<body>
+<!-- testi con data-t: chiave italiana, tradotta da t() qui sotto (inglese di base, scelta salvata in .launcher.json) -->
+<div class="langs" role="group" aria-label="Language">
+  <button type="button" data-lang="en"><svg class="flag" viewBox="0 0 60 30" aria-hidden="true"><clipPath id="uk-t"><path d="M30,15 h30 v15 z v15 h-30 z h-30 v-15 z v-15 h30 z"/></clipPath><path d="M0,0 v30 h60 v-30 z" fill="#012169"/><path d="M0,0 L60,30 M60,0 L0,30" stroke="#fff" stroke-width="6"/><path d="M0,0 L60,30 M60,0 L0,30" clip-path="url(#uk-t)" stroke="#C8102E" stroke-width="4"/><path d="M30,0 v30 M0,15 h60" stroke="#fff" stroke-width="10"/><path d="M30,0 v30 M0,15 h60" stroke="#C8102E" stroke-width="6"/></svg>EN</button>
+  <button type="button" data-lang="it"><svg class="flag" viewBox="0 0 3 2" aria-hidden="true"><rect width="1" height="2" fill="#009246"/><rect x="1" width="1" height="2" fill="#fff"/><rect x="2" width="1" height="2" fill="#ce2b37"/></svg>IT</button>
+</div>
+<div class="launcher">
+  <header class="home-hero">
+    <span class="brand-ball big"></span>
+    <div>
+      <h1>Pokémon Pen &amp; Paper</h1>
+      <p class="muted" data-t="Avvio della dashboard e del server di lotta"></p>
+      <p class="muted version" id="version"></p>
+    </div>
+  </header>
+
+  <!-- scelte -->
+  <form class="panel" id="setup">
+    <!-- versione nuova su GitHub -->
+    <div class="update" id="update" hidden>
+      <strong id="updateTitle"></strong>
+      <details id="notes" hidden><summary data-t="Novità"></summary><pre id="notesText"></pre></details>
+      <p class="small muted" id="updateState" hidden></p>
+      <p class="error" id="updateError" hidden></p>
+      <div class="row gap-s">
+        <button type="button" class="btn-primary" id="doUpdate" data-t="Aggiorna ora"></button>
+      </div>
+    </div>
+    <h2 data-t="Avvio"></h2>
+    <label><span data-t="Apri la dashboard con"></span><select name="browser"></select></label>
+    <label><span data-t="Quando chiudo la dashboard"></span>
+      <select name="autoStop">
+        <option value="0" data-t="Lascia tutto acceso"></option>
+        <option value="2" data-t="Spegni tutto dopo 2 minuti"></option>
+        <option value="5" data-t="Spegni tutto dopo 5 minuti"></option>
+        <option value="10" data-t="Spegni tutto dopo 10 minuti"></option>
+        <option value="30" data-t="Spegni tutto dopo 30 minuti"></option>
+      </select>
+    </label>
+    <label class="check"><input type="checkbox" name="remember"> <span data-t="Ricorda le scelte e avvia subito le prossime volte"></span></label>
+    <p class="countdown" id="countdown" hidden></p>
+    <button class="btn-primary play" id="play" data-t="Gioca"></button>
+    <div class="row between">
+      <a href="#" id="bug" target="_blank" rel="noopener noreferrer" class="small" data-t="Segnala un bug"></a>
+      <button type="button" class="btn-s" id="quit" data-t="Esci"></button>
+    </div>
+  </form>
+
+  <!-- avvio in corso -->
+  <section class="panel" id="progress" hidden>
+    <h2 id="progressTitle"></h2>
+    <ul class="steps">
+      <li data-step="assets" data-t="Immagini e audio di Showdown raggiungibili"></li>
+      <li data-step="docker" data-t="Docker pronto"></li>
+      <li data-step="stop" data-t="Fermo i container già accesi"></li>
+      <li data-step="up" data-t="Avvio i container"></li>
+      <li data-step="showdown" data-t="Showdown in esecuzione"></li>
+      <li data-step="app" data-t="Dashboard in esecuzione"></li>
+      <li data-step="link" data-t="Dashboard collegata a Showdown"></li>
+    </ul>
+    <div class="log" id="log"></div>
+    <p class="error" id="error" hidden></p>
+    <!-- immagini e audio non raggiungibili: un altro indirizzo -->
+    <form class="stack" id="assetsFix" hidden>
+      <label><span data-t="Indirizzo di immagini e audio"></span><input type="url" name="assets" required placeholder="https://play.pokemonshowdown.com/"></label>
+      <div class="row gap-s wrap">
+        <button class="btn-primary" data-t="Usa questo indirizzo e riprova"></button>
+        <button type="button" id="assetsDefault" data-t="Indirizzo predefinito"></button>
+        <button type="button" id="assetsSkip" data-t="Continua comunque"></button>
+      </div>
+    </form>
+    <div class="row end gap-s" id="errorActions" hidden>
+      <button type="button" id="back" data-t="Torna alle impostazioni"></button>
+      <button type="button" class="btn-primary" id="retry" data-t="Riprova"></button>
+    </div>
+    <div id="done" hidden class="stack">
+      <p><strong data-t="Pronto!"></strong> <span id="doneText"></span></p>
+      <p class="small muted" data-t="Telefoni sulla stessa Wi-Fi:"></p>
+      <ul class="ips" id="ips"></ul>
+    </div>
+  </section>
+</div>
+
+<script>
+const EN = {
+  'Avvio della dashboard e del server di lotta': 'Starts the dashboard and the battle server',
+  'Avvio': 'Start', 'Apri la dashboard con': 'Open the dashboard with', 'Quando chiudo la dashboard': 'When I close the dashboard',
+  'Lascia tutto acceso': 'Leave everything running', 'Spegni tutto dopo 2 minuti': 'Shut everything down after 2 minutes',
+  'Spegni tutto dopo 5 minuti': 'Shut everything down after 5 minutes', 'Spegni tutto dopo 10 minuti': 'Shut everything down after 10 minutes',
+  'Spegni tutto dopo 30 minuti': 'Shut everything down after 30 minutes', 'Ricorda le scelte e avvia subito le prossime volte': 'Remember my choices and start right away next time',
+  'Gioca': 'Play', 'Esci': 'Quit', 'Docker pronto': 'Docker ready', 'Fermo i container già accesi': 'Stopping containers already running',
+  'Avvio i container': 'Starting the containers', 'Showdown in esecuzione': 'Showdown running', 'Dashboard in esecuzione': 'Dashboard running',
+  'Dashboard collegata a Showdown': 'Dashboard connected to Showdown', 'Torna alle impostazioni': 'Back to the settings', 'Riprova': 'Try again',
+  'Pronto!': 'Ready!', 'Telefoni sulla stessa Wi-Fi:': 'Phones on the same Wi-Fi:', 'Avvio in corso': 'Starting', 'Avvio non riuscito': 'Start failed',
+  'Avvio tra {n}…': 'Starting in {n}…', 'Apro la dashboard in {browser}: questa finestra si chiude da sola.': 'Opening the dashboard in {browser}: this window closes by itself.',
+  'dashboard {dash} · lotte {battles}': 'dashboard {dash} · battles {battles}', 'Browser predefinito del sistema': 'System default browser',
+  'la prima volta costruisce le immagini: qualche minuto': 'the first time it builds the images: a few minutes',
+  'docker {args} non riuscito': 'docker {args} failed',
+  'Docker (con Compose) non trovato: installa Docker Desktop da docker.com e riprova.': 'Docker (with Compose) not found: install Docker Desktop from docker.com and try again.',
+  'Docker è installato ma non è avviato: apri Docker Desktop (o avvia il servizio docker) e riprova.': 'Docker is installed but not running: open Docker Desktop (or start the docker service) and try again.',
+  'I container non sono pronti dopo 3 minuti. Log: docker compose logs': 'The containers are not ready after 3 minutes. Logs: docker compose logs',
+  'Il container {name} si è fermato. Log: docker compose logs': 'The {name} container stopped. Logs: docker compose logs',
+  'Immagini e audio di Showdown raggiungibili': 'Showdown images and audio reachable',
+  'Immagini e audio non raggiungibili da {url}. Il sito potrebbe essere giù o spostato: scrivi un altro indirizzo o riprova più tardi.': 'Images and audio cannot be reached at {url}. The site may be down or moved: enter another address or try again later.',
+  'Indirizzo di immagini e audio': 'Images and audio address', 'Usa questo indirizzo e riprova': 'Use this address and retry',
+  'Indirizzo predefinito': 'Default address', 'Continua comunque': 'Continue anyway',
+  'Versione {v}': 'Version {v}', 'Versione {v} · aggiornata': 'Version {v} · up to date', 'Versione {v} · non riesco a controllare gli aggiornamenti': 'Version {v} · cannot check for updates',
+  'Nuova versione disponibile: {v}': 'New version available: {v}', 'Novità': "What's new", 'Aggiorna ora': 'Update now',
+  'Scarico la nuova versione…': 'Downloading the new version…', 'Installo la nuova versione…': 'Installing the new version…',
+  'Aggiornato alla {v}: riapro il launcher…': 'Updated to {v}: reopening the launcher…', 'Aggiornamento non riuscito: {err}': 'Update failed: {err}',
+  'Questa è una copia di sviluppo (git): aggiorna con git pull.': 'This is a development copy (git): update with git pull.',
+  'Segnala un bug': 'Report a bug',
+};
+let lang = 'en';
+const t = (s, vars = {}) => (lang === 'en' ? EN[s] ?? s : s).replace(/\{(\w+)\}/g, (m, k) => k in vars ? vars[k] : m);
+const $ = id => document.getElementById(id);
+const form = $('setup');
+const post = (path, body) => fetch(path, {method: 'POST', headers: {'content-type': 'application/json'}, body: JSON.stringify(body || {})});
+/** Testi della pagina nella lingua scelta. */
+function translatePage() {
+  document.documentElement.lang = lang;
+  document.querySelectorAll('[data-t]').forEach(el => { el.textContent = t(el.dataset.t); });
+  document.querySelectorAll('[data-lang]').forEach(b => b.setAttribute('aria-pressed', b.dataset.lang === lang));
+  if (form.browser.options[0]) form.browser.options[0].text = t('Browser predefinito del sistema');
+  if (version) $('version').textContent = t(versionKey, {v: version});
+  if (newVersion) $('updateTitle').textContent = t('Nuova versione disponibile: {v}', {v: newVersion});
+}
+let timer;
+
+const events = new EventSource('/api/events');
+events.onmessage = e => {
+  const d = JSON.parse(e.data);
+  if (d.step) {
+    const li = document.querySelector(`[data-step="${d.step}"]`);
+    li.className = d.state;
+    li.querySelector('small')?.remove();
+    if (d.text) { const small = document.createElement('small'); small.textContent = t(d.text); li.append(small); }
+  }
+  if (d.log) $('log').textContent = d.log;
+  if (d.error) {
+    document.querySelector('.steps li.wait')?.classList.replace('wait', 'err');
+    $('progressTitle').textContent = t('Avvio non riuscito');
+    $('error').textContent = t(d.error, d.vars);
+    $('error').hidden = $('errorActions').hidden = false;
+    if (d.assets) { $('assetsFix').assets.value = d.vars.url; $('assetsFix').hidden = false; }
+  }
+  if (d.update) { $('updateState').textContent = t(d.update === 'download' ? 'Scarico la nuova versione…' : 'Installo la nuova versione…'); $('updateState').hidden = false; }
+  if (d.updated) { $('updateState').textContent = t('Aggiornato alla {v}: riapro il launcher…', {v: d.updated}); setTimeout(() => window.close(), 1500); }
+  if (d.updateError) {
+    $('updateError').textContent = t('Aggiornamento non riuscito: {err}', {err: t(d.updateError)});
+    $('updateError').hidden = $('doUpdate').disabled = false;
+    $('updateState').hidden = true;
+  }
+  if (d.done) {
+    $('doneText').textContent = t('Apro la dashboard in {browser}: questa finestra si chiude da sola.', {browser: d.browser});
+    $('ips').replaceChildren(...d.ips.map(ip => { const li = document.createElement('li'); li.textContent = t('dashboard {dash} · lotte {battles}', {dash: `http://${ip}:3000`, battles: `http://${ip}:8000`}); return li; }));
+    $('done').hidden = false;
+    $('log').hidden = true;
+    setTimeout(() => window.close(), 5000);
+  }
+};
+
+function start(extra = {}) {
+  clearInterval(timer);
+  $('countdown').hidden = true;
+  const f = new FormData(form);
+  document.querySelectorAll('.steps li').forEach(li => { li.className = ''; li.querySelector('small')?.remove(); });
+  $('error').hidden = $('errorActions').hidden = $('assetsFix').hidden = true;
+  $('log').textContent = '';
+  $('progressTitle').textContent = t('Avvio in corso');
+  form.hidden = true;
+  $('progress').hidden = false;
+  post('/api/start', {browser: f.get('browser'), autoStop: f.get('autoStop'), remember: f.get('remember') === 'on', ...extra});
+}
+
+form.onsubmit = e => { e.preventDefault(); start(); };
+$('retry').onclick = () => start();
+$('assetsFix').onsubmit = e => { e.preventDefault(); start({assets: $('assetsFix').assets.value}); };
+$('assetsDefault').onclick = () => start({assets: defaultAssets});
+$('assetsSkip').onclick = () => start({skipAssets: true});
+$('doUpdate').onclick = () => { $('doUpdate').disabled = true; $('updateError').hidden = true; post('/api/update'); };
+$('back').onclick = () => { $('progress').hidden = true; form.hidden = false; };
+$('quit').onclick = () => { post('/api/quit'); window.close(); };
+// qualsiasi modifica annulla la partenza automatica
+form.oninput = () => { auto = false; clearInterval(timer); $('countdown').hidden = true; };
+// cambio lingua: salvata subito, anche questo annulla la partenza automatica
+document.querySelectorAll('[data-lang]').forEach(b => b.onclick = () => { lang = b.dataset.lang; translatePage(); post('/api/lang', {lang}); form.oninput(); });
+
+let defaultAssets, version, versionKey = 'Versione {v}', newVersion, auto;
+/** Partenza automatica tra 3 secondi (scelte ricordate), se nel frattempo non si è toccato niente. */
+function countdown() {
+  if (!auto) return;
+  let n = 3;
+  const tick = () => { if (n === 0) return start(); $('countdown').textContent = t('Avvio tra {n}…', {n: n--}); };
+  $('countdown').hidden = false;
+  tick();
+  timer = setInterval(tick, 1000);
+}
+fetch('/api/state').then(r => r.json()).then(({settings: s, browsers, ...info}) => {
+  ({version, defaultAssets} = info);
+  lang = s.lang === 'it' ? 'it' : 'en';
+  // modulo per i bug su GitHub, con versione e sistema già scritti
+  $('bug').href = `https://github.com/${info.repo}/issues/new?template=bug_report.yml&version=${encodeURIComponent(version)}&system=${encodeURIComponent(info.system)}`;
+  for (const b of browsers) form.browser.add(new Option(b, b));
+  form.browser.value = s.browser?.name && browsers.includes(s.browser.name) ? s.browser.name : browsers[0];
+  form.autoStop.value = String(s.autoStop);
+  form.remember.checked = s.remember;
+  auto = s.remember && s.browser;
+  translatePage();
+  // prima gli aggiornamenti: se ce n'è uno niente partenza automatica, si vede il pulsante
+  fetch('/api/update').then(r => r.json()).then(u => {
+    if (u.error) versionKey = 'Versione {v} · non riesco a controllare gli aggiornamenti';
+    else if (!u.available) versionKey = 'Versione {v} · aggiornata';
+    else {
+      newVersion = u.version;
+      if (u.notes) { $('notesText').textContent = u.notes; $('notes').hidden = false; }
+      $('update').hidden = false;
+      auto = false;
+    }
+    translatePage();
+    countdown();
+  });
+});
+</script>
+</body>
+</html>
