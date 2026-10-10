@@ -3,12 +3,12 @@
 // gli "hook" (useQualcosa) sono funzioni che leggono stato o dati e fanno ridisegnare il componente quando cambiano.
 // Contiene: sprite e tipi, finestre (Modal), tessera e editor dei Pokémon, statistiche, dadi, medaglie,
 // scheda per i giocatori, calcolatore dei tipi, scelta degli sprite, squadra riordinabile, pulsanti d'incontro.
-import {useEffect, useMemo, useRef, useState, type ReactNode} from 'react';
+import {useContext, useEffect, useMemo, useRef, useState, type ReactNode} from 'react';
 import {ChevronLeft, ChevronRight, Dices, Fish, GripVertical, Pickaxe, Sparkles, Sprout, TreeDeciduous, Waves, X} from 'lucide-react';
 import {METHODS, methodOf} from '../../server/src/methods';
-import {api, cached, d, natureName, spriteUrl, STAT_NAMES, typeName, useCached, useSpecies, useStore, type Mon, type SpeciesInfo, type Stats, type Trainer, type Zone} from './api';
+import {api, cached, d, natureName, RollerCtx, socket, spriteUrl, STAT_NAMES, typeName, useCached, useRolls, useShareRoll, useSpecies, useStore, type Mon, type Roll, type SpeciesInfo, type Stats, type Trainer, type Zone} from './api';
 import {fudgeOutcome, rollFace, type Face} from '../../server/src/rules';
-import {t, tj} from './i18n';
+import {LOCALE, t, tj} from './i18n';
 import {badgesOf, badgeUrl, BASE_SPRITES, CLASS_SPRITES, NPC_CLASSES, resolveTrainerSprite, spriteForTrainer, trainerSpriteUrl} from './trainers';
 
 /** Sprite di una specie nello stile della generazione; se manca, ripiega sulla Gen 5. */
@@ -53,6 +53,29 @@ const TYPE_HEX: Record<string, string> = {
   Dragon: '#7038f8', Dark: '#705848', Steel: '#b8b8d0', Fairy: '#ee99ac',
 };
 
+/** Stati alterati (testo italiano, tradotto con t() quando si mostra). */
+export const STATUS_IT: Record<string, string> = {slp: 'Sonno', par: 'Paralisi', frz: 'Congelato', psn: 'Avvelenato', tox: 'Iperavvelenato', brn: 'Scottato'};
+/** Nome di uno stato alterato nella lingua scelta (sigla di Showdown se sconosciuto). */
+export const statusName = (s: string) => STATUS_IT[s] ? t(STATUS_IT[s]) : s;
+
+/** PS attuali e massimi di un Pokémon (hp assente = pieni). */
+export function hpOf(sp: SpeciesInfo | undefined, mon: Mon) {
+  const max = calcStats(sp, mon)?.hp || 0;
+  return {cur: Math.min(max, mon.hp ?? max), max};
+}
+/** Barra dei PS con numeri, stato e KO. */
+export function MonHp({mon, sp}: {mon: Mon, sp?: SpeciesInfo}) {
+  const {cur, max} = hpOf(sp, mon);
+  if (!max) return null;
+  const pct = cur / max * 100;
+  return (
+    <div className="mon-hp">
+      <div className="hpbar"><div className={`hpbar-fill ${pct <= 20 ? 'red' : pct <= 50 ? 'yellow' : ''}`} style={{transform: `scaleX(${pct / 100})`}} /></div>
+      <span className="small">{cur ? `${cur}/${max} ${t('PS')}` : <b className="ko">KO</b>}{mon.status && cur > 0 && <span className={`status st-${mon.status}`}>{statusName(mon.status)}</span>}</span>
+    </div>
+  );
+}
+
 /** Tessera Pokémon: ritratto tinto per tipo con riflesso olografico e targhetta fissa. */
 export function MonCard({mon, onClick, actions, compact}: {mon: Mon, onClick?: () => void, actions?: ReactNode, compact?: boolean}) {
   const {campaign} = useStore();
@@ -60,7 +83,7 @@ export function MonCard({mon, onClick, actions, compact}: {mon: Mon, onClick?: (
   const sp = useSpecies(campaign.gen).get(mon.species);
   const tint = TYPE_HEX[sp?.types[0] || 'Normal'];
   return (
-    <div className={`mon-card ${onClick ? 'clickable' : ''} ${compact ? 'compact' : ''}`} style={{'--t': tint} as React.CSSProperties} onClick={onClick}
+    <div className={`mon-card ${onClick ? 'clickable' : ''} ${compact ? 'compact' : ''} ${mon.hp === 0 ? 'fainted' : ''}`} style={{'--t': tint} as React.CSSProperties} onClick={onClick}
       role={onClick ? 'button' : undefined} tabIndex={onClick ? 0 : undefined} onKeyDown={onClick ? e => e.key === 'Enter' && onClick() : undefined}>
       <div className="mon-port"><Sprite species={mon.species} shiny={mon.shiny} size={compact ? 72 : 128} /></div>
       <div className="mon-plate">
@@ -72,6 +95,7 @@ export function MonCard({mon, onClick, actions, compact}: {mon: Mon, onClick?: (
         <div className="ln"><span>{mon.nickname ? mon.species : (mon.nature ? natureName(mon.nature, natures) : '')}</span><span className="lv">LV {mon.level}</span></div>
         {!compact && <div className="types">{sp?.types.map(ty => <TypeBadge key={ty} type={ty} />)}</div>}
         {!compact && mon.nickname && mon.nature && <div className="ln"><span>{natureName(mon.nature, natures)}</span></div>}
+        {(mon.place === 'party' || mon.place === 'pc') && <MonHp mon={mon} sp={sp} />}
       </div>
       {actions && <div className="mon-card-actions" onClick={e => e.stopPropagation()}>{actions}</div>}
     </div>
@@ -168,6 +192,7 @@ export function MonEditor({initial, onSave, onDelete, onClose, title = 'Pokémon
               ))}</tbody>
             </table>
           )}
+          {sp && (m.place === 'party' || m.place === 'pc') && <HpControls mon={m} sp={sp} onChange={set} />}
           <div className="row gap-s">
             <button onClick={() => levelUp(1)}>+1 LV</button>
             <button onClick={() => levelUp(4)}>{t('+d4 man.')}</button>
@@ -213,6 +238,11 @@ export function MonEditor({initial, onSave, onDelete, onClose, title = 'Pokémon
             <label>{t('Posizione')}
               <select value={m.place || 'party'} onChange={e => set({place: e.target.value as any})}>
                 <option value="party">{t('Squadra')}</option><option value="pc">{t('PC di Bill')}</option>
+              </select>
+            </label>
+            <label>{t('Stato')}
+              <select value={m.status || ''} onChange={e => set({status: e.target.value})}>
+                <option value="">{t('Nessuno')}</option>{Object.entries(STATUS_IT).map(([k, v]) => <option key={k} value={k}>{t(v)}</option>)}
               </select>
             </label>
             <label>{t('Allenatore')}
@@ -282,7 +312,11 @@ export function FudgeRoller({modifier = 0, onResult, extraDie}: {modifier?: numb
   const [result, setResult] = useState<ReturnType<typeof fudgeOutcome> | null>(null);
   const [rolling, setRolling] = useState(false);
   useEffect(() => { setFaces(Array(n).fill(' ')); setResult(null); }, [n]);
-  const finish = (f: Face[]) => { const r = fudgeOutcome(f, modifier); setResult(r); onResult?.(r); };
+  const share = useShareRoll();
+  const finish = (f: Face[], digital = false) => {
+    const r = fudgeOutcome(f, modifier); setResult(r); onResult?.(r);
+    if (digital) share(`${n}dF ${f.map(x => x === ' ' ? '□' : x === '+' ? '+' : '−').join(' ')}${modifier ? ` (mod ${modifier > 0 ? '+' : ''}${modifier})` : ''} → ${t(r.label)}`);
+  };
   /** Tiro digitale con una breve animazione. */
   function roll() {
     setRolling(true);
@@ -290,7 +324,7 @@ export function FudgeRoller({modifier = 0, onResult, extraDie}: {modifier?: numb
     const t = setInterval(() => {
       const f = Array.from({length: n}, () => rollFace());
       setFaces(f);
-      if (++i >= 8) { clearInterval(t); setRolling(false); finish(f); }
+      if (++i >= 8) { clearInterval(t); setRolling(false); finish(f, true); }
     }, 60);
   }
   /** Inserimento a mano: ogni clic sulla faccia passa vuota -> + -> -. */
@@ -316,9 +350,10 @@ export function FudgeRoller({modifier = 0, onResult, extraDie}: {modifier?: numb
 /** Dado numerico (d6, d20, d100…): tiro digitale o risultato scritto a mano. */
 export function NumberDie({sides, onResult}: {sides: number, onResult?: (n: number) => void}) {
   const [v, setV] = useState<number | ''>('');
+  const share = useShareRoll();
   return (
     <div className="num-die">
-      <button className="die" onClick={() => { const r = d(sides); setV(r); onResult?.(r); }}>d{sides}</button>
+      <button className="die" onClick={() => { const r = d(sides); setV(r); onResult?.(r); share(`d${sides} → ${r}`); }}>d{sides}</button>
       <input type="number" min={1} max={sides} value={v} placeholder="—" aria-label={t('Risultato d{sides}', {sides})}
         onChange={e => { const r = +e.target.value; setV(r || ''); if (r) onResult?.(r); }} />
     </div>
@@ -402,15 +437,18 @@ export function useBadges() {
 type MoveInfo = {id: string, name: string, type: string, category: string, power: number, accuracy: number | true, pp: number};
 const CAT_IT: Record<string, string> = {Physical: 'Fisica', Special: 'Speciale', Status: 'Stato'};
 
-/** Scheda di sola lettura di un Pokémon per i giocatori: statistiche, natura, abilità, mosse. */
+/** Scheda di un Pokémon per i giocatori: statistiche, natura, abilità, mosse; possono cambiare soprannome e mosse, curarlo e salire di livello. */
 export function MonDetails({mon, onClose, actions}: {mon: Mon, onClose: () => void, actions?: ReactNode}) {
-  const {campaign} = useStore();
+  const {campaign, save} = useStore();
   const gen = campaign.gen;
   const sp = useSpecies(gen).get(mon.species);
   const natures = useCached<Record<string, string>>('/dex/natures');
   const moves = useCached<MoveInfo[]>(`/dex/${gen}/moves`);
+  const [pickMoves, setPickMoves] = useState(false);
   const stats = calcStats(sp, mon);
   const max = stats ? Math.max(...Object.values(stats), 1) : 1;
+  // crescita dall'ultimo aumento di livello (prevLevel lo salva il server quando il livello sale)
+  const before = mon.prevLevel && mon.prevLevel < mon.level ? calcStats(sp, {...mon, level: mon.prevLevel}) : null;
   return (
     <Modal title={mon.nickname || mon.species} onClose={onClose}>
       <div className="mon-details">
@@ -425,19 +463,30 @@ export function MonDetails({mon, onClose, actions}: {mon: Mon, onClose: () => vo
             {mon.item && <div className="small">{t('Strumento')}: <b>{mon.item}</b></div>}
           </div>
         </div>
+        {mon.id && (mon.place === 'party' || mon.place === 'pc') && <>
+          <label className="row gap-xs small">{t('Soprannome')}
+            <input key={mon.id} defaultValue={mon.nickname || ''} placeholder={mon.species} maxLength={18}
+              onBlur={e => { const v = e.target.value.trim(); if (v !== (mon.nickname || '')) save('mon', {...mon, nickname: v}); }}
+              onKeyDown={e => e.key === 'Enter' && e.currentTarget.blur()} />
+          </label>
+          <HpControls mon={mon} sp={sp} />
+        </>}
         {stats && (
           <table className="stat-bars">
-            <thead><tr><th></th><th>{t('Valore')}</th><th></th><th className="muted">{t('Base')}</th><th className="muted">IV</th><th className="muted">EV</th></tr></thead>
+            {before && <caption className="small">{t('Ultima crescita: LV {from} → {to}', {from: mon.prevLevel, to: mon.level})}</caption>}
+            <thead><tr><th></th><th>{t('Valore')}</th>{before && <th>{t('Crescita')}</th>}<th></th><th className="muted">{t('Base')}</th><th className="muted">IV</th><th className="muted">EV</th></tr></thead>
             <tbody>{(Object.keys(stats) as (keyof Stats)[]).map(k => (
               <tr key={k}>
-                <th>{STAT_NAMES[k]}</th><td><b>{stats[k]}</b></td>
+                <th>{STAT_NAMES[k]}</th><td><b>{stats[k]}</b></td>{before && <td className={stats[k] > before[k] ? 'grow' : 'muted'}>+{stats[k] - before[k]}</td>}
                 <td className="bar-cell"><span className="stat-bar" style={{transform: `scaleX(${stats[k] / max})`}} /></td>
                 <td className="muted">{sp!.baseStats[k]}</td><td className="muted">{mon.ivs?.[k] ?? '—'}</td><td className="muted">{mon.evs?.[k] ?? 0}</td>
               </tr>
             ))}</tbody>
           </table>
         )}
-        <h3>{t('Mosse')}</h3>
+        {mon.id && mon.place !== 'npc' && <LevelUp mon={mon} />}
+        <h3>{t('Mosse')} {mon.id && mon.place !== 'npc' && <button className="btn-s" onClick={() => setPickMoves(p => !p)}>{pickMoves ? t('Fatto') : t('Cambia mosse')}</button>}</h3>
+        {pickMoves && <MoveChooser mon={mon} />}
         <ul className="move-list">
           {mon.moves.filter(Boolean).map(mv => {
             const info = moves?.find(x => x.name === mv);
@@ -453,6 +502,92 @@ export function MonDetails({mon, onClose, actions}: {mon: Mon, onClose: () => vo
         {actions && <div className="row gap-s end wrap">{actions}</div>}
       </div>
     </Modal>
+  );
+}
+
+/**
+ * PS tra una lotta e l'altra: danno o cura di una quantità (Pozione = 20), PS al massimo, cura dello stato.
+ * Lo usano anche i giocatori, per gli strumenti usati fuori dalla lotta.
+ */
+/** onChange: senza, salva subito (scheda dei giocatori, solo cure); con, cambia solo la copia in modifica (editor del master, salva con «Salva»). */
+function HpControls({mon, sp, onChange}: {mon: Mon, sp?: SpeciesInfo, onChange?: (patch: Partial<Mon>) => void}) {
+  const {save} = useStore();
+  const [n, setN] = useState(20);
+  const {cur, max} = hpOf(sp, mon);
+  const gm = !!onChange; // i giocatori curano solo con gli strumenti: niente PS a mano né danno
+  const apply = (patch: Partial<Mon>) => onChange ? onChange(patch) : save('mon', {...mon, ...patch});
+  const setHp = (v: number, patch: Partial<Mon> = {}) => apply({...patch, hp: v >= max ? undefined : Math.max(0, Math.round(v)), status: v <= 0 ? '' : (patch.status ?? mon.status)});
+  return (
+    <div className="hp-controls">
+      <MonHp mon={mon} sp={sp} />
+      {gm && <label className="row gap-xs small">{t('PS attuali')}
+        <input type="number" className="w-num" min={0} max={max} value={cur} onChange={e => e.target.value !== '' && setHp(Math.min(max, +e.target.value))} aria-label={t('PS attuali')} />
+        <span className="muted">/ {max}</span>
+      </label>}
+      <div className="row gap-xs wrap">
+        <input type="number" className="w-num" min={1} value={n} onChange={e => setN(Math.max(1, +e.target.value || 1))} aria-label={t('Quantità di PS')} />
+        {gm && <button className="btn-s" onClick={() => setHp(cur - n)} disabled={!cur}>{t('− Danno')}</button>}
+        <button className="btn-s" onClick={() => setHp(cur + n)} disabled={!cur || cur >= max} title={cur ? '' : t('È KO: serve un Revitalizzante (PS al massimo o metà)')}>{t('+ Cura')}</button>
+        {!cur && <button className="btn-s" onClick={() => setHp(Math.floor(max / 2))}>{t('Revitalizzante (½)')}</button>}
+        <button className="btn-s" onClick={() => setHp(max, {status: ''})} disabled={cur >= max && !mon.status}>{t('PS al massimo')}</button>
+        {mon.status && <button className="btn-s" onClick={() => setHp(cur, {status: ''})}>{t('Cura {status}', {status: statusName(mon.status)})}</button>}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * +1 livello dalla scorta data dal Master (il server controlla che ne resti uno: mai più livelli spesi che dati).
+ * Dopo la salita mostra le mosse nuove e se può evolversi (l'evoluzione la decide il Master).
+ */
+function LevelUp({mon}: {mon: Mon}) {
+  const {campaign, trainer} = useStore();
+  const me = useContext(RollerCtx);
+  const [info, setInfo] = useState<{newMoves: {move: string, level: number}[], evolutions: {name: string, ready: boolean}[]} | null>(null);
+  const [err, setErr] = useState('');
+  const owner = campaign.teamMode === 'own' ? trainer.find(x => x.id === mon.owner) : campaign;
+  const left = (owner?.levelsGiven || 0) - (owner?.levelsSpent || 0);
+  if (left <= 0 && !info) return null;
+  async function up() {
+    setErr('');
+    try { setInfo(await api(`/c/${campaign.id}/levelup`, 'POST', {monId: mon.id, who: me.who})); } catch (e: any) { setErr(e.message); }
+  }
+  return (
+    <div className="callout">
+      <div className="row between wrap gap-s">
+        <span>{t('Livelli da distribuire')}{campaign.teamMode === 'own' && owner ? ` (${(owner as Trainer).name})` : ''}: <b>{left}</b></span>
+        <button className="btn-primary btn-s" disabled={left <= 0 || mon.level >= 100} onClick={up}>+1 LV</button>
+      </div>
+      {info?.newMoves.map(nm => <div key={nm.move} className="small">{tj('Può imparare {move}: usa «Cambia mosse».', {move: <b>{nm.move}</b>})}</div>)}
+      {info?.evolutions.filter(e => e.ready).map(e => <div key={e.name} className="small">{tj('Può evolversi in {name}! Dillo al Master.', {name: <b>{e.name}</b>})}</div>)}
+      {err && <p className="error small">{err}</p>}
+    </div>
+  );
+}
+
+/** Scelta delle 4 mosse tra quelle che il Pokémon impara per livello fino al suo livello (più quelle che conosce già). */
+function MoveChooser({mon}: {mon: Mon}) {
+  const {campaign, save} = useStore();
+  const sp = useSpecies(campaign.gen).get(mon.species);
+  const learn = useCached<{levelUp: {move: string, level: number}[]}>(sp ? `/dex/${campaign.gen}/learnset/${sp.id}` : null);
+  if (!learn) return <p className="small muted">{t('Caricamento mosse…')}</p>;
+  const known = mon.moves.filter(Boolean);
+  const options = [...new Set([...known, ...learn.levelUp.filter(l => l.level <= mon.level).map(l => l.move)])];
+  const setSlot = (i: number, mv: string) => {
+    const next = [...known];
+    if (!mv) next.splice(i, 1); else next[i] = mv;
+    if (new Set(next).size !== next.length) return; // la stessa mossa due volte no
+    save('mon', {...mon, moves: next});
+  };
+  return (
+    <div className="grid-2">
+      {[0, 1, 2, 3].map(i => (
+        <select key={i} value={known[i] || ''} onChange={e => setSlot(i, e.target.value)} aria-label={t('Mossa {n}', {n: i + 1})} disabled={i > known.length}>
+          <option value="">{i < known.length ? t('— dimentica —') : t('— vuota —')}</option>
+          {options.filter(o => o === known[i] || !known.includes(o)).map(o => <option key={o} value={o}>{o}</option>)}
+        </select>
+      ))}
+    </div>
   );
 }
 
@@ -704,5 +839,32 @@ export function EncounterButtons({zone, onPick, disabled, big}: {zone?: Zone, on
         </button>
       ))}
     </div>
+  );
+}
+
+/** Notifica veloce di ogni tiro di dado (di chiunque), in alto: sparisce da sola dopo 3 secondi. */
+export function RollToast() {
+  const [items, setItems] = useState<(Roll & {k: number})[]>([]);
+  useEffect(() => {
+    const on = (r: Roll) => {
+      const k = Math.random();
+      setItems(l => [...l.slice(-2), {...r, k}]);
+      setTimeout(() => setItems(l => l.filter(x => x.k !== k)), 3000);
+    };
+    socket.on('roll', on);
+    return () => { socket.off('roll', on); };
+  }, []);
+  return <div className="roll-toasts" aria-live="polite">{items.map(r => <div key={r.k} className="roll-toast" style={{'--c': r.color || '#16213f'} as React.CSSProperties}><b>{r.who}</b> {r.text}</div>)}</div>;
+}
+
+/** Storico dei tiri di tutti (gli ultimi 30). */
+export function RollLog() {
+  const rolls = useRolls();
+  if (!rolls.length) return <p className="small muted">{t('Ancora nessun tiro.')}</p>;
+  return (
+    <ul className="roll-log">{rolls.map((r, i) => (
+      <li key={r.t + '-' + i}><span className="roll-who" style={{background: r.color || '#16213f'}}>{r.who}</span> {r.text}
+        <span className="muted small"> {new Date(r.t).toLocaleTimeString(LOCALE, {hour: '2-digit', minute: '2-digit'})}</span></li>
+    ))}</ul>
   );
 }

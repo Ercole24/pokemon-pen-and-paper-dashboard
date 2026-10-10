@@ -5,8 +5,8 @@
 // 4. Con un selvatico si può tentare la cattura con la tabella del libretto (CatchPanel).
 import {useEffect, useMemo, useState} from 'react';
 import {Sprout, Swords, X} from 'lucide-react';
-import {api, showdownUrl, socket, useSpecies, useStore, type Mon} from '../api';
-import {EncounterButtons, MonCard, MonEditor, NumberDie, Sprite, SpeciesInput, useClasses, useParty} from '../components';
+import {api, showdownUrl, socket, typeName, useCached, useSpecies, useStore, type Mon} from '../api';
+import {EncounterButtons, STATUS_IT, statusName, TypeBadge, MonCard, MonEditor, NumberDie, Sprite, SpeciesInput, useClasses, useParty} from '../components';
 import {catchModifiers, classTypeBonus} from '../../../server/src/rules';
 import {t, tj} from '../i18n';
 
@@ -36,8 +36,6 @@ export function useBattles(cid: string) {
   return list;
 }
 
-/** Stati alterati (nomi italiani, si traducono con t()). */
-const STATUS_IT: Record<string, string> = {slp: 'Sonno', par: 'Paralisi', frz: 'Congelato', psn: 'Avvelenato', tox: 'Iperavvelenato', brn: 'Scottato'};
 
 /** Barra dei PS colorata (verde, giallo, rosso). */
 export function HpBar({hp}: {hp: number}) {
@@ -51,7 +49,7 @@ export function Side({m, label}: {m?: SideMon, label: string}) {
     <div className="battle-side">
       <Sprite species={m.species} size={72} />
       <div>
-        <div><strong>{m.name}</strong> <span className="muted">LV {m.level}</span> {m.status && <span className={`status st-${m.status}`}>{STATUS_IT[m.status] ? t(STATUS_IT[m.status]) : m.status}</span>}</div>
+        <div><strong>{m.name}</strong> <span className="muted">LV {m.level}</span> {m.status && <span className={`status st-${m.status}`}>{statusName(m.status)}</span>}</div>
         <HpBar hp={m.hp} />
         <div className="small muted">{m.fainted ? t('Esausto') : t('{hp}% PS', {hp: m.hp})}</div>
       </div>
@@ -119,7 +117,7 @@ export default function Battle() {
         playerMonIds: party.filter(p => chosen.includes(p.id!)).map(p => p.id!), opponent, kind, gmControls: true, teamUser, gmUser,
         title: kind === 'trainer' && team ? `${team.trainerClass ? t(team.trainerClass) + ' ' : ''}${team.name}` : undefined,
       });
-      window.open(`${showdownUrl()}/${roomid}`, '_blank');
+      window.open(`${showdownUrl()}/${roomid}`, 'showdown');
     } catch (e: any) { setErr(e.message); }
     setBusy(false);
   }
@@ -190,6 +188,9 @@ export default function Battle() {
         <section className="panel battles">
           <h2>{t('Lotte in corso')}</h2>
           {battles.length === 0 && <p className="muted">{t('Nessuna lotta. Creane una qui accanto.')}</p>}
+          <h3>{t('Chi mandare in campo')}</h3>
+          <SwitchAdvisor owner={own ? fighter : undefined} />
+          <details className="panel-inner"><summary>{tj("{b} (squadra contro l'avversario in campo)", {b: <b>{t('Tabella dei tipi')}</b>})}</summary><TypeMatchup owner={own ? fighter : undefined} /></details>
           {[...battles].reverse().map(b => <BattleCard key={b.roomid} b={b} party={mon} save={save} onCatch={() => setCatching({wild: b.meta!.opponent[0], battle: b})} />)}
         </section>
       </div>
@@ -212,7 +213,7 @@ function BattleCard({b, onCatch, party, save}: {b: BattleState, onCatch: () => v
       </header>
       <div className="battle-sides"><Side m={b.active.p1} label={t('Squadra')} /><span className="vs">VS</span><Side m={b.active.p2} label={t('Avversario')} /></div>
       <div className="row gap-s wrap">
-        <a className="btn" href={`${showdownUrl()}/${b.roomid}`} target="_blank">{t('Apri su Showdown')}</a>
+        <a className="btn" href={`${showdownUrl()}/${b.roomid}`} target="showdown">{t('Apri su Showdown')}</a>
         {!b.ended && b.meta?.kind === 'wild' && <button className="btn-primary" onClick={onCatch}>Poké Ball!</button>}
         {!b.ended
           ? <button onClick={() => api(`/battle/${b.roomid}/end`, 'POST', {loser: 'p2'})}>{t('Termina')}</button>
@@ -336,7 +337,7 @@ function ShowdownSeats({online, refresh, teamLabel, teamUser, setTeamUser, gmUse
   return (
     <div className="seats">
       <h3>{t('Su Showdown')}</h3>
-      {online.length === 0 && <p className="small muted">{tj('Nessuno collegato. Aprite {url} su questo PC e sul telefono di chi gioca: senza scegliere nessun nome.', {url: <a href={showdownUrl()} target="_blank">{showdownUrl()}</a>})}</p>}
+      {online.length === 0 && <p className="small muted">{tj('Nessuno collegato. Aprite {url} su questo PC e sul telefono di chi gioca: senza scegliere nessun nome.', {url: <a href={showdownUrl()} target="showdown">{showdownUrl()}</a>})}</p>}
       <ul className="seat-list">
         {online.map(u => (
           <li key={u.id}>
@@ -353,6 +354,135 @@ function ShowdownSeats({online, refresh, teamLabel, teamUser, setTeamUser, gmUse
         <label>{teamLabel}<select value={teamUser} onChange={e => setTeamUser(e.target.value)}>{opt(teamUser)}</select></label>
         <label>{t('Avversario (il Master)')}<select value={gmUser} onChange={e => setGmUser(e.target.value)}>{opt(gmUser)}</select></label>
       </div>
+    </div>
+  );
+}
+
+/** Tabella dei tipi di Showdown: codice -> moltiplicatore (0 neutro, 1 debole x2, 2 resiste x½, 3 immune x0). */
+const TYPE_MULT = [1, 2, 0.5, 0];
+const multLabel = (m: number) => m === 0 ? 'x0' : m === 0.25 ? 'x¼' : m === 0.5 ? 'x½' : `x${m}`;
+const multClass = (m: number) => m === 0 ? 'm0' : m < 1 ? 'mlow' : m > 1 ? 'mhigh' : 'm1';
+
+/**
+ * Tabella dei tipi collegata alla partita: avversario = Pokémon in campo nella lotta in corso (o scelto a mano),
+ * e per ogni Pokémon della squadra quanto rischia (tipi dell'avversario contro i suoi) e la sua mossa migliore contro l'avversario.
+ * Sotto, la tabella completa con evidenziati i tipi della squadra e quelli dell'avversario.
+ */
+export function TypeMatchup({owner}: {owner?: string}) {
+  const {campaign} = useStore();
+  const species = useSpecies(campaign.gen);
+  const {party} = useParty(owner);
+  const data = useCached<{types: string[], chart: Record<string, Record<string, number>>}>(`/dex/${campaign.gen}/types`);
+  const moves = useCached<{name: string, type: string, category: string, power: number}[]>(`/dex/${campaign.gen}/moves`);
+  const live = useBattles(campaign.id).filter(b => !b.ended).at(-1)?.active.p2;
+  const [manual, setManual] = useState('');
+  const opp = species.get(manual) || (live && species.get(live.species));
+  if (!data) return null;
+  const eff = (atk: string, defTypes: string[]) => defTypes.reduce((x, d) => x * TYPE_MULT[data.chart[d]?.[atk] ?? 0], 1);
+  const ourTypes = new Set(party.flatMap(m => species.get(m.species)?.types || []));
+  return (
+    <div className="type-matchup">
+      <div className="row gap-s wrap">
+        <span>{t('Contro:')}</span>
+        <SpeciesInput gen={campaign.gen} value={manual} onChange={setManual} placeholder={live ? t('{species} (in lotta)', {species: live.species}) : t("scegli l'avversario")} />
+        {opp && <span className="types">{opp.types.map(ty => <TypeBadge key={ty} type={ty} />)}</span>}
+      </div>
+      {!opp && <p className="small muted">{t("Quando c'è una lotta in corso l'avversario in campo si sceglie da solo.")}</p>}
+      {opp && (
+        <table className="matchup">
+          <thead><tr><th>Pokémon</th><th title={t("Mossa più forte dei tuoi contro l'avversario")}>{t('Attacco')}</th><th title={t("Mosse dei tipi dell'avversario contro di te")}>{t('Rischio')}</th></tr></thead>
+          <tbody>{party.map(m => {
+            const sp = species.get(m.species);
+            if (!sp) return null;
+            const best = m.moves.map(n => moves?.find(x => x.name === n)).filter(x => x && x.category !== 'Status')
+              .map(x => ({name: x!.name, m: eff(x!.type, opp.types) * (sp.types.includes(x!.type) ? 1.5 : 1), raw: eff(x!.type, opp.types)}))
+              .sort((a, b) => b.m - a.m)[0];
+            const risk = Math.max(...opp.types.map(ty => eff(ty, sp.types)));
+            return (
+              <tr key={m.id} className={m.hp === 0 ? 'muted' : ''}>
+                <td>{m.nickname || m.species}{m.hp === 0 ? ' (KO)' : ''} <span className="types">{sp.types.map(ty => <TypeBadge key={ty} type={ty} />)}</span></td>
+                <td>{best ? <><span className={`mult ${multClass(best.raw)}`}>{multLabel(best.raw)}</span> {best.name}</> : <span className="muted small">—</span>}</td>
+                <td><span className={`mult ${multClass(1 / (risk || .01))}`}>{multLabel(risk)}</span></td>
+              </tr>
+            );
+          })}</tbody>
+        </table>
+      )}
+      <details className="small">
+        <summary>{t('Tabella completa dei tipi (righe = attacco, colonne = difesa)')}</summary>
+        <div className="type-grid-wrap">
+          <table className="type-grid">
+            <thead><tr><th></th>{data.types.map(d => <th key={d} className={ourTypes.has(d) ? 'ours' : ''} title={typeName(d)}>{typeName(d).slice(0, 3)}</th>)}</tr></thead>
+            <tbody>{data.types.map(a => (
+              <tr key={a} className={opp?.types.includes(a) ? 'opp' : ''}>
+                <th>{typeName(a)}</th>
+                {data.types.map(d => { const v = eff(a, [d]); return <td key={d} className={`${multClass(v)} ${ourTypes.has(d) ? 'ours' : ''}`}>{v === 1 ? '' : multLabel(v)}</td>; })}
+              </tr>
+            ))}</tbody>
+          </table>
+        </div>
+        <p className="muted">{t("In giallo le colonne dei tipi della vostra squadra, in rosso le righe dei tipi dell'avversario.")}</p>
+      </details>
+    </div>
+  );
+}
+
+/** Rischio (%) dal moltiplicatore peggiore che il Pokémon subisce dai tipi dell'avversario. */
+const RISK_PCT: Record<number, number> = {0: 0, 0.25: 10, 0.5: 25, 1: 50, 2: 75, 4: 95};
+
+/**
+ * Chi conviene mandare in campo contro il Pokémon avversario che è in campo adesso, solo in base ai tipi (non alle mosse):
+ * - attacco = il miglior moltiplicatore dei tipi del Pokémon contro i tipi dell'avversario (le mosse dello stesso tipo, STAB);
+ * - rischio = il peggior moltiplicatore dei tipi dell'avversario contro i tipi del Pokémon.
+ * Convenienza = attacco e difesa insieme su scala logaritmica (x2 e x½ pesano uguale), da 0% a 100%.
+ * Si aggiorna da solo a ogni cambio in lotta; senza lotta in corso si può scegliere l'avversario a mano.
+ */
+export function SwitchAdvisor({owner}: {owner?: string}) {
+  const {campaign} = useStore();
+  const species = useSpecies(campaign.gen);
+  const {party} = useParty(owner);
+  const data = useCached<{types: string[], chart: Record<string, Record<string, number>>}>(`/dex/${campaign.gen}/types`);
+  const battle = useBattles(campaign.id).filter(b => !b.ended).at(-1);
+  const live = battle?.active.p2;
+  const [manual, setManual] = useState('');
+  const opp = (live && !live.fainted && species.get(live.species)) || species.get(manual);
+  if (!data) return null;
+  const eff = (atk: string, defTypes: string[]) => defTypes.reduce((x, d) => x * TYPE_MULT[data.chart[d]?.[atk] ?? 0], 1);
+  const rows = !opp ? [] : party.map(m => {
+    const sp = species.get(m.species);
+    if (!sp) return null;
+    const offT = [...sp.types].sort((a, b) => eff(b, opp.types) - eff(a, opp.types))[0];
+    const off = eff(offT, opp.types);
+    const defT = [...opp.types].sort((a, b) => eff(b, sp.types) - eff(a, sp.types))[0];
+    const def = eff(defT, sp.types);
+    const lg = (x: number) => x === 0 ? -3 : Math.log2(x); // immune = come x⅛
+    const score = Math.round(Math.max(0, Math.min(1, (lg(off) - lg(def) + 4) / 8)) * 100);
+    return {m, sp, off, offT, def, defT, score, risk: RISK_PCT[def] ?? 50, ko: m.hp === 0, active: battle?.active.p1?.name === (m.nickname || m.species)};
+  }).filter(Boolean).sort((a, b) => +a!.ko - +b!.ko || b!.score - a!.score || a!.risk - b!.risk) as {m: Mon, sp: any, off: number, offT: string, def: number, defT: string, score: number, risk: number, ko: boolean, active: boolean}[];
+  const best = rows.find(r => !r.ko);
+  return (
+    <div className="switch-advisor">
+      <div className="row gap-s wrap">
+        {live && !live.fainted
+          ? <span>{tj('In campo contro di voi: {species} LV {level}', {species: <b>{live.species}</b>, level: live.level})}</span>
+          : <><span>{t('Contro:')}</span><SpeciesInput gen={campaign.gen} value={manual} onChange={setManual} placeholder={battle ? t('in attesa del prossimo Pokémon…') : t('nessuna lotta: scegli a mano')} /></>}
+        {opp && <span className="types">{opp.types.map(ty => <TypeBadge key={ty} type={ty} />)}</span>}
+      </div>
+      {opp && rows.map(r => (
+        <div key={r.m.id} className={`advice ${r.ko ? 'ko' : ''} ${r === best ? 'best' : ''}`}>
+          <Sprite species={r.m.species} size={48} />
+          <div className="advice-main">
+            <div><b>{r.m.nickname || r.m.species}</b> {r === best && <span className="badge">{t('Consigliato')}</span>} {r.active && <span className="badge">{t('In campo')}</span>} {r.ko && <span className="badge">KO</span>}</div>
+            <div className="advice-bars">
+              <span>{t('Conviene')}</span><div className="pbar"><div className="pbar-fill good" style={{width: `${r.score}%`}} /></div><b>{r.score}%</b>
+              <span>{t('Rischio')}</span><div className="pbar"><div className="pbar-fill bad" style={{width: `${r.risk}%`}} /></div><b>{r.risk}%</b>
+            </div>
+            <div className="small muted">{t('Attacca {off} con {offType} · subisce {def} da {defType}', {off: multLabel(r.off), offType: typeName(r.offT), def: multLabel(r.def), defType: typeName(r.defT)})}</div>
+          </div>
+        </div>
+      ))}
+      {opp && !rows.length && <p className="small muted">{t('Squadra vuota.')}</p>}
+      <p className="small muted">{t("Calcolo solo sui tipi (non sulle mosse che conoscono): attacco = miglior tipo del vostro Pokémon contro l'avversario, rischio = peggior tipo dell'avversario contro di lui.")}</p>
     </div>
   );
 }

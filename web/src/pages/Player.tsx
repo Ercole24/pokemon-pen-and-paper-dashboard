@@ -1,30 +1,31 @@
 // Vista del giocatore sul telefono (/c/<id>/giocatore/<allenatore>).
-// Prima si sceglie il proprio Allenatore, poi ci sono cinque schede in basso:
+// Prima si sceglie il proprio Allenatore, poi ci sono sei schede in basso:
 // Scheda (modificabile), Squadra (ordine, PC, dettagli dei Pokémon), Dadi (con calcolatore dei tipi),
-// Mappa (la mappa attiva, solo dopo essere stati posizionati dal master) e Lotte (come entrare su Showdown).
+// Mappa (la mappa attiva, solo dopo essere stati posizionati dal master), Lotte (come entrare su Showdown) e Manuale.
 import {useState} from 'react';
-import {Dices, Footprints, IdCard, Map as MapIcon, Swords} from 'lucide-react';
+import {BookText, Dices, Footprints, IdCard, Map as MapIcon, Swords} from 'lucide-react';
 import {Link, useNavigate, useParams} from 'react-router-dom';
-import {showdownUrl, useStore} from '../api';
-import {BadgeCase, FudgeRoller, MonCard, MonDetails, NumberDie, SortableParty, TypeCalculator, useBadges, useParty} from '../components';
+import {RollerCtx, showdownUrl, useMap, useStore} from '../api';
+import {BadgeCase, FudgeRoller, RollLog, MonCard, MonDetails, NumberDie, SortableParty, TypeCalculator, useBadges, useParty} from '../components';
 import {ArrowDownToLine, ArrowUpFromLine} from 'lucide-react';
 import type {Mon} from '../api';
 import {spriteForTrainer, trainerSpriteUrl} from '../trainers';
 import {TrainerSheet, classOf} from './Trainers';
 import {useClasses} from '../components';
-import {MapView} from './MapPlay';
-import {useBattles, HpBar} from './Battle';
+import {MapView, playerColor} from './MapPlay';
+import Manual from './Manual';
+import {useBattles, HpBar, SwitchAdvisor, TypeMatchup} from './Battle';
 import {ALL_STATS} from '../../../server/src/classes';
 import {LangSwitch, t, tj} from '../i18n';
 
 /** Schede disponibili, con il nome mostrato nella barra in basso. */
-type Tab = 'scheda' | 'squadra' | 'dadi' | 'mappa' | 'lotte';
-const TAB_LABEL: Record<Tab, string> = {scheda: 'Scheda', squadra: 'Squadra', dadi: 'Dadi', mappa: 'Mappa', lotte: 'Lotte'};
+type Tab = 'scheda' | 'squadra' | 'dadi' | 'mappa' | 'lotte' | 'manuale';
+const TAB_LABEL: Record<Tab, string> = {scheda: 'Scheda', squadra: 'Squadra', dadi: 'Dadi', mappa: 'Mappa', lotte: 'Lotte', manuale: 'Manuale'};
 
 /** La pagina. */
 export default function Player() {
   const {tid} = useParams();
-  const {trainer, campaign, map} = useStore();
+  const {trainer, campaign} = useStore();
   const nav = useNavigate();
   const me = trainer.find(t => t.id === tid);
   const [tab, setTab] = useState<Tab>('scheda');
@@ -37,7 +38,7 @@ export default function Player() {
   const badges = useBadges();
   const battles = useBattles(campaign.id).filter(b => !b.ended);
   const [stat, setStat] = useState(ALL_STATS[0]);
-  const activeMap = map.find(m => m.id === campaign.activeMap);
+  const activeMap = useMap(campaign.activeMap);
 
   if (!me) {
     return (
@@ -55,6 +56,7 @@ export default function Player() {
   const mods = classOf(me, classes)?.mods || {};
 
   return (
+    <RollerCtx.Provider value={{who: me.name, color: playerColor(trainer, me.id)}}>
     <div className="player">
       <header className="player-head">
         <img className="player-avatar" src={trainerSpriteUrl(spriteForTrainer(me, campaign.gen))} alt="" />
@@ -64,7 +66,7 @@ export default function Player() {
         <Link to=".." relative="path" className="small">{t('cambia')}</Link>
       </header>
       {battles.length > 0 && (
-        <a className="battle-banner" href={`${showdownUrl()}/${battles.at(-1)!.roomid}`} target="_blank">
+        <a className="battle-banner" href={`${showdownUrl()}/${battles.at(-1)!.roomid}`} target="showdown">
           <Swords /> {battles.at(-1)!.title}: {t('apri la lotta')}
         </a>
       )}
@@ -94,14 +96,19 @@ export default function Player() {
           <FudgeRoller modifier={mods[stat] || 0} />
           <h3>{t('Altri dadi')}</h3>
           <div className="dice-grid">{[4, 6, 20, 100].map(s => <NumberDie key={s} sides={s} />)}</div>
+          <h3>{t('Tiri del tavolo')}</h3>
+          <RollLog />
         </section>}
+        {tab === 'dadi' && <section className="panel"><h2>{t('Tabella dei tipi')}</h2><TypeMatchup owner={tid} /></section>}
         {tab === 'dadi' && <section className="panel"><h2>{t('Tipi difensivi')}</h2><TypeCalculator /></section>}
-        {tab === 'mappa' && (activeMap ? <MapView map={activeMap} myToken={me.id} /> : <p className="muted">{t('Nessuna mappa al tavolo.')}</p>)}
+        {tab === 'mappa' && (activeMap ? <MapView map={activeMap} myToken={me.id} /> : <p className="muted">{activeMap === null ? t('Caricamento mappa…') : t('Nessuna mappa al tavolo.')}</p>)}
+        {tab === 'manuale' && <Manual gm={false} />}
+        {tab === 'lotte' && <section className="panel"><h2>{t('Chi mandare in campo')}</h2><SwitchAdvisor owner={tid} /></section>}
         {tab === 'lotte' && <section className="stack">
           <div className="panel">
             <h2>{t('Come entrare in lotta')}</h2>
             <ol className="steps">
-              <li>{tj("Apri {url} in un'altra scheda.", {url: <a href={showdownUrl()} target="_blank">{showdownUrl()}</a>})}</li>
+              <li>{tj("Apri {url} in un'altra scheda.", {url: <a href={showdownUrl()} target="showdown">{showdownUrl()}</a>})}</li>
               <li><b>{t('Non scegliere nessun nome.')}</b> {t('In alto a destra vedi “Guest” e un numero: dillo al Master.')}</li>
               <li>{t('Il Master ti dà il nome dalla dashboard: lo vedi cambiare da solo.')}</li>
               <li>{t('Quando inizia la lotta, si apre da sola nella scheda di Showdown.')}</li>
@@ -109,7 +116,7 @@ export default function Player() {
           </div>
           {battles.length === 0 && <p className="muted">{t('Nessuna lotta in corso.')}</p>}
           {battles.map(b => (
-            <a key={b.roomid} className="panel battle-mini" href={`${showdownUrl()}/${b.roomid}`} target="_blank">
+            <a key={b.roomid} className="panel battle-mini" href={`${showdownUrl()}/${b.roomid}`} target="showdown">
               <strong>{b.title}</strong>
               {b.active.p2 && <><span>{b.active.p2.name} LV {b.active.p2.level}</span><HpBar hp={b.active.p2.hp} /></>}
             </a>
@@ -117,10 +124,11 @@ export default function Player() {
         </section>}
       </main>
       <nav className="tabbar">
-        {([['scheda', IdCard], ['squadra', Footprints], ['dadi', Dices], ['mappa', MapIcon], ['lotte', Swords]] as const).map(([id, Icon]) => (
+        {([['scheda', IdCard], ['squadra', Footprints], ['dadi', Dices], ['mappa', MapIcon], ['lotte', Swords], ['manuale', BookText]] as const).map(([id, Icon]) => (
           <button key={id} className={tab === id ? 'active' : ''} onClick={() => setTab(id)} aria-current={tab === id ? 'page' : undefined}><Icon />{t(TAB_LABEL[id])}</button>
         ))}
       </nav>
     </div>
+    </RollerCtx.Provider>
   );
 }

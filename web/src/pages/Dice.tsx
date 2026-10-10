@@ -2,7 +2,8 @@
 // Ogni tiro si può fare in digitale o inserendo il risultato dei dadi veri; gli ultimi risultati restano in elenco.
 import {useState} from 'react';
 import {useStore} from '../api';
-import {FudgeRoller, NumberDie, TypeCalculator} from '../components';
+import {TypeMatchup} from './Battle';
+import {FudgeRoller, NumberDie, RollLog, TypeCalculator} from '../components';
 import {t} from '../i18n';
 
 /** La pagina. */
@@ -48,6 +49,14 @@ export default function Dice() {
           <h3>{t('Ultimi tiri')}</h3>
           <ul className="roll-list">{last.map((l, i) => <li key={i}>{l}</li>)}</ul>
           {last[0] && (notedRoll === last[0] ? <span className="noted">{t('Annotato nel diario')}</span> : <button className="btn-s" onClick={async () => { await addLog(t('Tiro: {roll}', {roll: last[0]})); setNotedRoll(last[0]); }}>{t('Annota nel diario')}</button>)}
+        </section>
+        <section className="panel">
+          <h2>{t('Tiri del tavolo')}</h2>
+          <RollLog />
+        </section>
+        <section className="panel wide-panel">
+          <h2>{t('Tabella dei tipi')}</h2>
+          <TypeMatchup />
         </section>
         <section className="panel wide-panel">
           <h2>{t('Tipi difensivi')}</h2>

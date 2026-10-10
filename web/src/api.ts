@@ -42,6 +42,8 @@ export type Mon = {
   id?: string, species: string, nickname?: string, level: number, gender: string, nature: string,
   ability: string, ivs: Stats, evs: Stats, moves: string[], shiny: boolean, item?: string,
   place?: 'party' | 'pc' | 'npc', owner?: string, team?: string, notes?: string, order?: number,
+  /** PS attuali tra una lotta e l'altra (assente = pieni, 0 = KO), stato alterato rimasto, livello prima dell'ultima crescita */
+  hp?: number, status?: string, prevLevel?: number,
 };
 /**
  * Una campagna: generazione, regione, impostazioni di gioco, nomi Showdown, mappa attiva, tipo di avventura.
@@ -52,6 +54,8 @@ export type Campaign = {
   id: string, name: string, gen: number, region: string, shinyRate: number, hiddenAbilityChance: number,
   teamUser: string, gmUser: string, activeZone?: string, activeMap?: string, moveRange?: number, sharedBadges?: boolean, badges?: number[],
   teamMode?: 'own' | 'shared',
+  /** livelli dati dal master e già spesi dai giocatori (squadra condivisa; con squadre personali stanno nell'Allenatore) */
+  levelsGiven?: number, levelsSpent?: number,
 };
 
 /** I tre tipi di avventura: squadre e medaglie personali; squadra condivisa e medaglie personali; tutto condiviso. */
@@ -66,7 +70,7 @@ export const adventureOf = (c: Pick<Campaign, 'teamMode' | 'sharedBadges'>) => c
 export type Trainer = {
   id?: string, name: string, player?: string, age?: string, hometown?: string, className: string,
   customClass?: any, hiddenPower?: string, bag?: string, notes?: string, badges?: number[], money?: number,
-  gender?: 'M' | 'F', sprite?: string,
+  gender?: 'M' | 'F', sprite?: string, levelsGiven?: number, levelsSpent?: number,
 };
 /** Una specie in una zona: probabilità (peso relativo nello stesso modo), livelli, modo d'incontro. */
 export type ZoneEntry = {species: string, rate: number, minLevel: number, maxLevel: number, method?: string};
@@ -84,13 +88,16 @@ export type MapLayer = {name: string, type: 'tile' | 'collision' | 'zone', data:
  * segnaposto) e tokens = segnalini degli Allenatori in gioco.
  */
 export type MapDoc = {
-  id?: string, name: string, width: number, height: number, tileSize: number, group?: string,
+  id?: string, name: string, layersRev?: number, width: number, height: number, tileSize: number, group?: string,
   tilesets: {id: string, firstgid: number}[], layers: MapLayer[],
   zoneRefs: string[], // indice (valore-1) nel livello zone -> id zona
   objects: {id: string, x: number, y: number, kind: 'warp' | 'npc' | 'marker' | 'item', label: string, color?: string, toMap?: string, toX?: number, toY?: number,
-    npcTeam?: string, item?: string, hidden?: boolean, sprite?: string, text?: string}[],
-  tokens?: {id: string, x: number, y: number, label: string, color: string}[],
+    npcTeam?: string, item?: string, hidden?: boolean, sprite?: string, text?: string, gmText?: string}[], // text = cosa dice ai giocatori, gmText = note solo per il master
+  // kind assente = Allenatore; pokemon/npc/trap = segnalini del master; hidden = solo il master lo vede (semitrasparente)
+  tokens?: {id: string, x: number, y: number, label: string, color: string, kind?: 'pokemon' | 'npc' | 'trap', sprite?: string, hidden?: boolean}[],
 };
+/** Mappa nell'elenco della campagna: tutto tranne i livelli di tile, che si scaricano con useMap() solo per la mappa aperta. */
+export type MapSummary = Omit<MapDoc, 'layers'>;
 /** Un brano di YouTube ascoltato nella campagna (pagina Musica): link normalizzato, titolo, categoria, ultimo ascolto. */
 export type Track = {id?: string, link: string, title?: string, category?: string, t: number};
 /** Una riga del diario della campagna. */
@@ -98,7 +105,7 @@ export type LogEntry = {id: string, t: number, text: string, type: string};
 
 /** Tutti i documenti di una campagna, divisi per tipo. */
 type State = {
-  trainer: Trainer[], mon: Mon[], zone: Zone[], map: MapDoc[], tileset: Tileset[], npcteam: any[], log: LogEntry[], note: any[], track: Track[],
+  trainer: Trainer[], mon: Mon[], zone: Zone[], map: MapSummary[], tileset: Tileset[], npcteam: any[], log: LogEntry[], note: any[], track: Track[],
 };
 const KINDS = ['trainer', 'mon', 'zone', 'map', 'tileset', 'npcteam', 'log', 'note', 'track'] as const;
 const empty: State = {trainer: [], mon: [], zone: [], map: [], tileset: [], npcteam: [], log: [], note: [], track: []};
@@ -165,6 +172,48 @@ export function useCampaignStore(cid: string): Store | null {
   } as Store, [state, campaign, ready, cid]);
 }
 
+/**
+ * Mappa completa (con i livelli) per id: undefined = non esiste, null = in caricamento.
+ * Segnalini, oggetti e nome arrivano in tempo reale dall'elenco; i livelli si riscaricano solo quando cambiano (layersRev).
+ */
+export function useMap(id?: string): MapDoc | null | undefined {
+  const {map, campaign} = useStore();
+  const lite = map.find(m => m.id === id);
+  const [full, setFull] = useState<MapDoc | null>(null);
+  useEffect(() => {
+    if (!id || !lite) return;
+    let alive = true;
+    api<MapDoc>(`/c/${campaign.id}/map/${id}`).then(m => alive && setFull(m)).catch(() => {});
+    return () => { alive = false; };
+  }, [id, !lite, lite?.layersRev]);
+  if (!lite) return undefined;
+  return full && full.id === id ? {...full, ...lite, layers: full.layers} : null;
+}
+
+// --- tiri di dado condivisi ---
+/** Un tiro visto da tutti: chi, colore del giocatore, risultato. */
+export type Roll = {who: string, color?: string, text: string, t: number};
+/** Chi sta tirando i dadi in questa vista (il giocatore sul telefono, altrimenti il Master). */
+export const RollerCtx = createContext<{who: string, color?: string}>({who: 'Master', color: '#16213f'});
+/** Hook: funzione che manda un tiro a tutti i browser della campagna. */
+export function useShareRoll() {
+  const {campaign} = useStore();
+  const me = useContext(RollerCtx);
+  return (text: string) => socket.emit('roll', {cid: campaign.id, ...me, text});
+}
+/** Ultimi tiri della campagna, aggiornati in tempo reale. */
+export function useRolls() {
+  const {campaign} = useStore();
+  const [list, setList] = useState<Roll[]>([]);
+  useEffect(() => {
+    api<Roll[]>(`/c/${campaign.id}/rolls`).then(setList).catch(() => {});
+    const on = (r: Roll) => setList(l => [r, ...l].slice(0, 30));
+    socket.on('roll', on);
+    return () => { socket.off('roll', on); };
+  }, [campaign.id]);
+  return list;
+}
+
 // --- dati Pokémon (cache per generazione) ---
 /** Specie del Pokédex come la manda il server (vedi server/src/dex.ts). */
 export type SpeciesInfo = {
@@ -192,7 +241,9 @@ export function useSpecies(gen: number) {
   return useMemo(() => {
     const byName = new Map<string, SpeciesInfo>();
     for (const s of list || []) { byName.set(s.name.toLowerCase(), s); byName.set(s.id, s); }
-    return {list: list || [], get: (name: string) => byName.get(name?.toLowerCase?.()) || byName.get(name?.toLowerCase?.().replace(/[^a-z0-9]/g, ''))};
+    // «Nidoran♀» / «Nidoran♂» come li scrivono i giochi = Nidoran-F / Nidoran-M di Showdown
+    const norm = (name: string) => name?.toLowerCase?.().replace(/♀/g, 'f').replace(/♂/g, 'm');
+    return {list: list || [], get: (name: string) => byName.get(name?.toLowerCase?.()) || byName.get(norm(name)?.replace(/[^a-z0-9]/g, ''))};
   }, [list]);
 }
 

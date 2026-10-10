@@ -29,6 +29,9 @@ export const NATURES_IT: Record<string, string> = {
   Calm: 'Calma', Gentle: 'Gentile', Sassy: 'Vivace', Careful: 'Cauta', Quirky: 'Furba',
 };
 
+/** Nome scritto dall'utente -> nome di Showdown: «Nidoran♀» e «Nidoran♂» diventano Nidoran-F e Nidoran-M. */
+const spName = (n: string) => String(n || '').replace(/♀/g, '-F').replace(/♂/g, '-M');
+
 /** Pokédex di una generazione (limitata tra 1 e 9). */
 const dexFor = (gen: number) => Dex.mod(`gen${Math.min(Math.max(gen, 1), 9)}`);
 
@@ -69,7 +72,7 @@ function toInfo(dex: any, s: any): SpeciesInfo {
 
 /** Una specie per nome (accetta anche id come 'mrmime'), o undefined. */
 export function species(gen: number, name: string): SpeciesInfo | undefined {
-  const s = dexFor(gen).species.get(name);
+  const s = dexFor(gen).species.get(spName(name));
   return s.exists ? toInfo(dexFor(gen), s) : undefined;
 }
 
@@ -84,7 +87,7 @@ export function moveList(gen: number) {
 /** Mosse apprese salendo di livello, nella generazione più recente <= gen che ha dati. */
 export function levelUpMoves(gen: number, speciesName: string): {move: string, level: number}[] {
   const dex = dexFor(gen);
-  let s = dex.species.get(speciesName);
+  let s = dex.species.get(spName(speciesName));
   for (let guard = 0; guard < 3 && s.exists; guard++) {
     const data = dex.species.getLearnsetData(s.id);
     if (data?.learnset) {
@@ -114,7 +117,7 @@ export function levelUpMoves(gen: number, speciesName: string): {move: string, l
 export function learnableMoves(gen: number, speciesName: string): string[] {
   const dex = dexFor(gen);
   const out = new Set<string>();
-  let s = dex.species.get(speciesName);
+  let s = dex.species.get(spName(speciesName));
   const seen = new Set<string>();
   while (s.exists && !seen.has(s.id)) {
     seen.add(s.id);
@@ -141,12 +144,22 @@ export type Mon = {
   id?: string, species: string, nickname?: string, level: number, gender: string, nature: string,
   ability: string, ivs: Stats, evs: Stats, moves: string[], shiny: boolean, item?: string,
   place?: string, owner?: string, team?: string, notes?: string,
+  /** PS attuali tra una lotta e l'altra (assente = pieni, 0 = KO) e stato alterato rimasto (par, psn, slp…) */
+  hp?: number, status?: string,
 };
+
+/** PS massimi con la formula dei giochi (Gen 3+, Shedinja = 1). */
+export function maxHp(gen: number, m: Mon) {
+  const sp = species(gen, m.species);
+  if (!sp) return 0;
+  if (sp.baseStats.hp === 1) return 1;
+  return Math.floor((2 * sp.baseStats.hp + (m.ivs?.hp ?? 31) + Math.floor((m.evs?.hp ?? 0) / 4)) * m.level / 100) + m.level + 10;
+}
 
 /** Crea un Pokémon selvatico con sesso, natura, IV, abilità e mosse casuali secondo le regole della generazione. */
 export function generateMon(settings: Settings, speciesName: string, level: number, rng: Rng = Math.random): Mon {
   const gen = settings.gen;
-  const s = dexFor(gen).species.get(speciesName);
+  const s = dexFor(gen).species.get(spName(speciesName));
   if (!s.exists) throw fail(400, 'Specie sconosciuta: {name}', {name: speciesName});
   level = Math.max(1, Math.min(100, Math.round(level)));
 

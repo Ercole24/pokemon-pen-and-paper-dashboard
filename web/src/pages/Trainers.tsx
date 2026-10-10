@@ -3,10 +3,15 @@
 // TrainerSheet è usata anche nella vista giocatore.
 import {useEffect, useState} from 'react';
 import {TYPES_IT, typeName, useStore, type Trainer} from '../api';
-import {t, tj} from '../i18n';
+import {LOCALE, t, tj} from '../i18n';
 import {BadgeCase, FudgeRoller, Modal, SpriteChooser, TrainerSprite, useBadges, useClasses} from '../components';
 import {CLASS_SPRITES, spriteForTrainer, trainerSpriteUrl} from '../trainers';
 import {STAT_GROUPS, ALL_STATS} from '../../../server/src/classes';
+
+/** Zaino salvato come testo («Poké Ball x5, Pozione x2»): elenco di [oggetto, quantità] e ritorno. */
+export const parseBag = (bag = '') => bag.split(/[,\n]/).map(x => x.trim()).filter(Boolean)
+  .map(x => { const m = x.match(/^(.*?)\s*[x×]\s*(\d+)$/i); return m ? [m[1], +m[2]] as [string, number] : [x, 1] as [string, number]; });
+export const formatBag = (items: [string, number][]) => items.filter(([, n]) => n > 0).map(([name, n]) => n > 1 ? `${name} x${n}` : name).join(', ');
 
 /** Scheda vuota per un nuovo Allenatore. */
 const blank: Trainer = {name: '', className: 'Fantallenatore', gender: 'M', bag: '', notes: '', badges: [], money: 3000};
@@ -52,6 +57,25 @@ export function TrainerSheet({initial, onSaved, onDelete, playerMode}: {initial:
   const [assist, setAssist] = useState(false);
   useEffect(() => { if (!dirty) setT(initial); }, [initial]);
   const set = (p: Partial<Trainer>) => { setT({...tr, ...p}); setDirty(true); };
+  /** Soldi e zaino si salvano subito (anche dal telefono), partendo dall'ultima versione salvata. */
+  const quick = async (p: Partial<Trainer>) => {
+    if (!tr.id) return set(p);
+    const saved = await save('trainer', {...initial, ...p});
+    setT(cur => ({...cur, money: saved.money, bag: saved.bag}));
+  };
+  const [amount, setAmount] = useState('');
+  const [newItem, setNewItem] = useState('');
+  const live = tr.id ? initial : tr; // con la scheda salvata mostra sempre l'ultima versione (anche se cambiata da un altro telefono)
+  const bag = parseBag(live.bag);
+  const setBag = (items: [string, number][]) => quick({bag: formatBag(items)});
+  /** Aggiunge un oggetto (o ne aumenta la quantità se c'è già). */
+  const addItem = () => {
+    const [name, n] = parseBag(newItem)[0] || [];
+    if (!name) return;
+    const i = bag.findIndex(([x]) => x.toLowerCase() === name.toLowerCase());
+    setBag(i >= 0 ? bag.map((it, j) => j === i ? [it[0], it[1] + n] : it) : [...bag, [name, n]]);
+    setNewItem('');
+  };
   const cls = classOf(tr, classes);
   const mods: Record<string, number> = cls?.mods || {};
 
@@ -88,7 +112,13 @@ export function TrainerSheet({initial, onSaved, onDelete, playerMode}: {initial:
             <option value="Personalizzata">{t('Personalizzata')}</option>
           </select>
         </label>
-        <label>{t('Soldi (₽)')}<input type="number" value={tr.money ?? 0} onChange={e => set({money: +e.target.value})} /></label>
+        <div className="stack-xs"><span className="small">{t('Soldi')}: <b>{(live.money ?? 0).toLocaleString(LOCALE)} ₽</b></span>
+          <div className="row gap-xs">
+            <input type="number" min={0} inputMode="numeric" value={amount} placeholder={t('importo')} aria-label={t('Importo')} onChange={e => setAmount(e.target.value)} style={{width: '7em'}} />
+            <button type="button" className="btn-s" disabled={!+amount} onClick={() => { quick({money: Math.max(0, (initial.money ?? 0) - +amount)}); setAmount(''); }}>{t('− Togli')}</button>
+            <button type="button" className="btn-s" disabled={!+amount} onClick={() => { quick({money: (initial.money ?? 0) + +amount}); setAmount(''); }}>{t('+ Aggiungi')}</button>
+          </div>
+        </div>
         {!playerMode && <label>{t('Sprite personalizzato')}
           <SpriteChooser value={tr.sprite || ''} fallback={(CLASS_SPRITES[tr.className] || ['acetrainer', 'acetrainerf'])[tr.gender === 'F' ? 1 : 0]} placeholder={t('dalla Classe')} onChange={b => set({sprite: b})} />
         </label>}
@@ -145,7 +175,24 @@ export function TrainerSheet({initial, onSaved, onDelete, playerMode}: {initial:
       </label>
 
       <div className="grid-2">
-        <label>{t('Zaino')}<textarea rows={6} value={tr.bag || ''} onChange={e => set({bag: e.target.value})} placeholder={t('Poké Ball x5, Pozione x2, MN01 Taglio…')} /></label>
+        <div className="stack-xs"><span>{t('Zaino')}</span>
+          {bag.length === 0 && <span className="small muted">{t('Vuoto.')}</span>}
+          {bag.map(([name, n], i) => (
+            <div key={i} className="row gap-xs between">
+              <span>{name}</span>
+              <span className="row gap-xs">
+                <button type="button" className="btn-s" aria-label={t('Togli un {name}', {name})} onClick={() => setBag(bag.map((it, j) => j === i ? [it[0], it[1] - 1] : it))}>−</button>
+                <b>{n}</b>
+                <button type="button" className="btn-s" aria-label={t('Aggiungi un {name}', {name})} onClick={() => setBag(bag.map((it, j) => j === i ? [it[0], it[1] + 1] : it))}>+</button>
+                <button type="button" className="btn-s" aria-label={t('Butta {name}', {name})} onClick={() => setBag(bag.filter((_, j) => j !== i))}>✕</button>
+              </span>
+            </div>
+          ))}
+          <form className="row gap-xs" onSubmit={e => { e.preventDefault(); addItem(); }}>
+            <input value={newItem} placeholder={t('Pozione x2')} aria-label={t('Nuovo oggetto')} onChange={e => setNewItem(e.target.value)} />
+            <button className="btn-s" disabled={!newItem.trim()}>{t('+ Aggiungi')}</button>
+          </form>
+        </div>
         <label>{t('Note')}<textarea rows={6} value={tr.notes || ''} onChange={e => set({notes: e.target.value})} /></label>
       </div>
       <div className="stack">

@@ -23,6 +23,9 @@ export type BattleState = {
   fainted: {p1: string[], p2: string[]},
   log: string[],
   meta?: any,
+  /** PS (in %), stato ed esausto di ogni Pokémon della squadra (p1) visto in campo, per nome; hpSaved = già salvati a fine lotta */
+  p1mons: Record<string, {hp: number, status: string, fainted: boolean}>,
+  hpSaved?: boolean,
 };
 
 /** Eventi verso index.ts: 'status' (collegato/scollegato) e 'battle' (stato aggiornato), girati ai browser. */
@@ -109,28 +112,37 @@ function onBattleLine(roomid: string, line: string) {
   if (!b) return;
   const p = line.split('|');
   const side = (s: string) => s?.slice(0, 2) as 'p1' | 'p2';
+  // "p1a: Pikachu" o "p1: Pikachu" (fuori dal campo, es. Campana Cura) -> stato salvato per quel nome
+  const own = (ident: string, patch: Partial<{hp: number, status: string, fainted: boolean}>) => {
+    if (side(ident) !== 'p1') return;
+    const name = ident.replace(/^p\d[a-z]?: /, '');
+    b.p1mons[name] = {...(b.p1mons[name] || {hp: 100, status: '', fainted: false}), ...patch};
+  };
   switch (p[1]) {
   case 'player': if (p[3]) b.players[p[2] as 'p1' | 'p2'] = p[3]; break;
   case 'turn': b.turn = +p[2]; break;
   case 'switch': case 'drag': case 'replace': {
     const s = side(p[2]);
     b.active[s] = {status: '', fainted: false, hp: 100, level: 100, species: '', ...parseMon(p[2], p[3], p[4])} as SideMon;
+    if (p[4]) own(p[2], parseCondition(p[4]));
     if (s === 'p2') b.volatiles.p2 = [];
     break;
   }
   case '-damage': case '-heal': case '-sethp': {
     const s = side(p[2]);
     if (b.active[s]) Object.assign(b.active[s]!, parseCondition(p[3]));
+    own(p[2], parseCondition(p[3]));
     break;
   }
-  case '-status': { const s = side(p[2]); if (b.active[s]) b.active[s]!.status = p[3]; break; }
-  case '-curestatus': { const s = side(p[2]); if (b.active[s]) b.active[s]!.status = ''; break; }
+  case '-status': { const s = side(p[2]); if (b.active[s]) b.active[s]!.status = p[3]; own(p[2], {status: p[3]}); break; }
+  case '-curestatus': { const s = side(p[2]); if (b.active[s] && p[2].includes('a: ')) b.active[s]!.status = ''; own(p[2], {status: ''}); break; }
   case '-start': if (side(p[2]) === 'p2') b.volatiles.p2.push(p[3].replace('move: ', '')); break;
   case '-end': if (side(p[2]) === 'p2') b.volatiles.p2 = b.volatiles.p2.filter(v => v !== p[3].replace('move: ', '')); break;
   case 'faint': {
     const s = side(p[2]);
     b.fainted[s].push(p[2].replace(/^p\da: /, ''));
     if (b.active[s]) Object.assign(b.active[s]!, {hp: 0, fainted: true});
+    own(p[2], {hp: 0, status: '', fainted: true});
     break;
   }
   case 'win': b.ended = true; b.winner = p[2]; break;
@@ -186,7 +198,7 @@ export function renameUser(from: string, to: string) {
  * Se p2 manca, combatte il bot (modalità automatica, oggi non usata: il master controlla sempre l'avversario).
  * Il bot entra nella stanza come spettatore per leggere PS e stato.
  */
-export async function createBattle(opts: {format: string, p1: string, p2?: string, team1: string, team2: string, title: string, meta?: any}) {
+export async function createBattle(opts: {format: string, p1: string, p2?: string, team1: string, team2: string, title: string, hp1?: {hp: number | null, status: string}[], meta?: any}) {
   if (!ready) throw fail(503, 'Showdown non collegato: il server è avviato?');
   const auto = !opts.p2;
   const roomid = await new Promise<string>((resolve, reject) => {
@@ -198,12 +210,12 @@ export async function createBattle(opts: {format: string, p1: string, p2?: strin
     }, 8000);
     send('|/pnpbattle ' + JSON.stringify({
       secret: SECRET, format: opts.format, p1: opts.p1, p2: opts.p2 || BOT_NAME,
-      team1: opts.team1, team2: opts.team2, title: opts.title,
+      team1: opts.team1, team2: opts.team2, title: opts.title, hp1: opts.hp1,
     }));
   });
   battles.set(roomid, {
     roomid, title: opts.title, format: opts.format, auto, ended: false, turn: 0,
-    players: {p1: opts.p1, p2: opts.p2 || BOT_NAME}, active: {}, volatiles: {p2: []}, fainted: {p1: [], p2: []}, log: [], meta: opts.meta,
+    players: {p1: opts.p1, p2: opts.p2 || BOT_NAME}, active: {}, volatiles: {p2: []}, fainted: {p1: [], p2: []}, log: [], meta: opts.meta, p1mons: {},
   });
   if (!auto) send(`|/join ${roomid}`); // il bot osserva per leggere PS e stato del selvatico
   return roomid;

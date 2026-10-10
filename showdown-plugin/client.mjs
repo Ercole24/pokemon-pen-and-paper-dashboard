@@ -7,7 +7,7 @@
 // 1. dopo config.js: modalità testclient (niente iframe verso play.pokemonshowdown.com), server = questo PC;
 // 2. dopo battledata.js: risorse e audio da play.pokemonshowdown.com;
 // 3. dopo client.js: niente login server (nomi liberi grazie a noguestsecurity), quindi
-//    nessun popup e "Choose name" rinomina direttamente con /trn;
+//    nessun popup e "Choose name" rinomina direttamente con /trn; il nome resta finché la scheda è aperta;
 // 4. dopo client-mainmenu.js: niente news (le scaricherebbe da pokemonshowdown.com).
 // Corregge anche i CSS in <cartella>/style (effetti fx/ da play.pokemonshowdown.com).
 // Uso: node client.mjs <index-old.html del build> <cartella servita>   (es. server/static di Showdown)
@@ -59,7 +59,23 @@ page = after(page, 'js/battledata\\.js', '<script>' + [
 page = after(page, 'oldclient/client\\.js', '<script>' + [
   // la modalità testclient sostituisce $.get/$.post con popup manuali: rimettiamo quelli normali
   '(function (get, post) { Storage.whenAppLoaded(function () { $.get = get; $.post = post; }); })($.get, $.post);',
-  'User.prototype.receiveChallstr = function (c) { this.challstr = c; this.loaded = true; app.topbar.updateUserbar(); };',
+  // nome tenuto per tutta la vita della scheda (sessionStorage): a ogni nuova connessione (ricarica, telefono che ha chiuso
+  // il socket in background) si riprende lo stesso utente; Showdown unisce la vecchia sessione scollegata (stesso IP)
+  'Storage.whenAppLoaded(function () { app.user.on("change:name", function (u, n) { try { sessionStorage.setItem("pnpName", n); } catch (e) {} }); });',
+  'User.prototype.receiveChallstr = function (c) {',
+  '  this.challstr = c; this.loaded = true; app.topbar.updateUserbar();',
+  '  var n; try { n = sessionStorage.getItem("pnpName"); } catch (e) {}',
+  '  if (n) { app.pnpReclaim = {name: n, tries: 0}; app.send("/trn " + n); }',
+  '};',
+  // la vecchia connessione può risultare ancora aperta per qualche secondo: "nome in uso" -> si riprova, senza popup
+  '(function (receive) { App.prototype.receive = function (data) {',
+  '  var r = app.pnpReclaim;',
+  '  if (r && data.indexOf("|nametaken|") === 0) {',
+  '    if (++r.tries <= 10) { setTimeout(function () { app.send("/trn " + r.name); }, 3000); return; }',
+  '    app.pnpReclaim = null;',
+  '  } else if (r && data.indexOf("|updateuser|") === 0) app.pnpReclaim = null;',
+  '  return receive.apply(this, arguments);',
+  '}; })(App.prototype.receive);',
   'User.prototype.rename = function (name) { app.send("/trn " + name.replace(/[|,;]+/g, "")); };',
 ].join('\n') + '</script>');
 page = after(page, 'oldclient/client-mainmenu\\.js', '<script>MainMenuRoom.prototype.addNews = function () {};</script>');

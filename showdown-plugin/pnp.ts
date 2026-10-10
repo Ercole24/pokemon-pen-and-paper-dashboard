@@ -19,7 +19,8 @@ export const commands: Chat.ChatCommands = {
 	pnpbattle(target, room, user, connection) {
 		// errori per la dashboard: "testo con {0}|valore", tradotti da lei (server/src/i18n.ts)
 		const fail = (msg: string) => connection.send(`|pnperror|${msg}`);
-		let data: {secret: string, format: string, p1: string, p2: string, team1: string, team2: string, title?: string};
+		let data: {secret: string, format: string, p1: string, p2: string, team1: string, team2: string, title?: string,
+			hp1?: {hp: number | null, status: string}[]};
 		try {
 			data = JSON.parse(target);
 		} catch {
@@ -45,6 +46,14 @@ export const commands: Chat.ChatCommands = {
 			return fail(e.message);
 		}
 		if (!battle) return fail('Lotta non creata');
+		// PS e stato rimasti dalla lotta precedente: impostati nel simulatore. La riga ">>> codice" che eval scrive nel registro
+		// viene tolta subito (log.pop) e la Promise che non si risolve evita la riga del risultato: i giocatori non vedono niente.
+		if (data.hp1?.some(h => h.hp !== null || h.status)) {
+			const code = `battle.log.pop(); ${JSON.stringify(data.hp1)}.forEach((h, i) => { const p = p1.pokemon[i]; if (!p) return; ` +
+				`if (h.status) p.setStatus(h.status); if (h.hp !== null) p.sethp(h.hp); }); ` +
+				`if (p1.active[0]) battle.add('-sethp', p1.active[0], p1.active[0].getHealth, '[silent]'); new Promise(() => {})`;
+			void battle.battle?.stream.write(`>eval ${code}`);
+		}
 		connection.send(`|pnpbattle|${battle.roomid}`);
 	},
 
@@ -89,7 +98,15 @@ export const commands: Chat.ChatCommands = {
 		if (!toID(name)) return connection.send('|pnperror|Nome non valido');
 		const other = Users.get(name);
 		if (other && other !== u) {
-			if (other.connected) return connection.send(`|pnperror|Il nome {0} è già usato da un altro collegato|${name}`);
+			if (other.connected) {
+				// nome già in uso da un altro dispositivo (es. giocatore a distanza): unisce questa connessione allo stesso utente,
+				// come fa Showdown con chi apre un account in due schede; entrambi ricevono le richieste di lotta e possono scegliere
+				other.merge(u);
+				Users.merge(other, u);
+				u.destroy();
+				Rooms.global.rejoinGames(other);
+				return connection.send(`|pnprenamed|${other.name}`);
+			}
 			other.resetName(); // libera il nome di una vecchia sessione scollegata
 		}
 		if (!u.forceRename(name, false, true)) return connection.send(`|pnperror|Impossibile rinominare in {0}|${name}`);

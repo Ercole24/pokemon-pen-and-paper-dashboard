@@ -7,9 +7,12 @@ import {useMemo, useRef, useState} from 'react';
 import {exportMap, importPnpMap, isPnpMap, NewMapDialog} from '../mapfiles';
 import {Download, Trash2} from 'lucide-react';
 import {Link, useNavigate} from 'react-router-dom';
-import {useStore, type MapDoc, type Tileset} from '../api';
+import {api, useStore, type MapSummary, type Tileset} from '../api';
 import {addTilesetToMap, importTmj, newMap} from '../mapcore';
 import {t} from '../i18n';
+
+/** Nome del gruppo in cima con la mappa attiva. */
+const AT_TABLE = t('Al tavolo adesso');
 
 /** La pagina. */
 export default function Maps() {
@@ -23,14 +26,16 @@ export default function Maps() {
   const [q, setQ] = useState('');
   const [creating, setCreating] = useState(false);
   const groups = useMemo(() => {
-    const by = new Map<string, MapDoc[]>();
+    const by = new Map<string, MapSummary[]>();
     for (const m of map.filter(m => !q || m.name.toLowerCase().includes(q.toLowerCase())).sort((a, b) => a.name.localeCompare(b.name, 'it', {numeric: true}))) {
       const g = m.group || t('Mappe create da te');
       if (!by.has(g)) by.set(g, []);
       by.get(g)!.push(m);
     }
-    return [...by.entries()];
-  }, [map, q]);
+    // la mappa al tavolo sempre in cima, in un gruppo suo sempre aperto
+    const active = map.find(m => m.id === campaign.activeMap && (!q || m.name.toLowerCase().includes(q.toLowerCase())));
+    return [...(active ? [[AT_TABLE, [active]] as [string, MapSummary[]]] : []), ...by.entries()];
+  }, [map, q, campaign.activeMap]);
 
   /** Carica immagini come tileset (divise in tile della dimensione scelta). */
   async function uploadTilesets(files: FileList | null) {
@@ -95,7 +100,7 @@ export default function Maps() {
         {map.length === 0 && <p className="muted">{t('Nessuna mappa. Creane una nuova, oppure usa “Crea mappa da immagine”.')}</p>}
         <p className="small muted">{t('“Crea mappa da immagine” usa la dimensione tile indicata in Tileset.')}</p>
         {groups.map(([g, list]) => (
-          <details key={g} className="map-group" open={groups.length <= 2 || !!q}>
+          <details key={g} className="map-group" open={g === AT_TABLE || groups.length <= 2 || !!q}>
             <summary><strong>{g}</strong> <span className="muted small">{list.length}</span></summary>
             <ul className="map-list">
               {list.map(m => (
@@ -107,7 +112,7 @@ export default function Maps() {
                   <div className="row gap-s">
                     <Link className="btn" to={m.id!}>{t('Modifica')}</Link>
                     <Link className="btn btn-primary" to={`${m.id}/gioca`} onClick={() => updateCampaign({activeMap: m.id})}>{t('Gioca')}</Link>
-                    <button className="btn-icon" aria-label={t('Esporta')} title={t("Esporta per un'altra campagna")} onClick={() => exportMap(m, tileset)}><Download /></button>
+                    <button className="btn-icon" aria-label={t('Esporta')} title={t("Esporta per un'altra campagna")} onClick={async () => exportMap(await api(`/c/${campaign.id}/map/${m.id}`), tileset)}><Download /></button>
                     <button className="btn-icon" aria-label={t('Elimina')} onClick={() => confirm(t('Eliminare {name}?', {name: m.name})) && remove('map', m.id!)}><Trash2 /></button>
                   </div>
                 </li>

@@ -8,15 +8,18 @@ import type {MapDoc, MapLayer, Tileset} from './api';
 import {t} from './i18n';
 
 /** Immagini dei tileset già caricate (una per tileset). */
-const images = new Map<string, HTMLImageElement>();
+const images = new Map<string, {url: string, img: HTMLImageElement}>();
 /** Immagine di un tileset; onLoad viene chiamato quando finisce di caricare (per ridisegnare). */
 export function tilesetImage(ts: Tileset, onLoad?: () => void): HTMLImageElement {
-  let img = images.get(ts.id!);
-  if (!img || img.src !== ts.dataUrl) {
-    img = new Image();
-    img.src = ts.dataUrl;
-    images.set(ts.id!, img);
+  // confronto con l'URL salvato, non con img.src: il browser lo rende assoluto e un indirizzo relativo non coinciderebbe mai
+  // (prima si creava un'immagine nuova per ogni casella a ogni disegno: mappa nera al primo caricamento)
+  let e = images.get(ts.id!);
+  if (!e || e.url !== ts.dataUrl) {
+    e = {url: ts.dataUrl, img: new Image()};
+    e.img.src = ts.dataUrl;
+    images.set(ts.id!, e);
   }
+  const img = e.img;
   if (!img.complete && onLoad) img.addEventListener('load', onLoad, {once: true});
   return img;
 }
@@ -115,12 +118,15 @@ export function drawMap(ctx: CanvasRenderingContext2D, map: MapDoc, tilesets: Ti
         continue;
       }
       if (ob.kind === 'npc') {
+        if (ob.hidden && !o.objects) continue; // PNG nascosto: solo il master lo vede, semitrasparente
+        ctx.globalAlpha = ob.hidden ? .45 : 1;
         const img = o.npcImage?.(ob);
         if (img?.complete && img.naturalWidth) {
           const S = T * 1.7;
           ctx.fillStyle = 'rgba(0,0,0,.28)';
           ctx.beginPath(); ctx.ellipse(x + T / 2, y + T * .9, T * .38, T * .14, 0, 0, Math.PI * 2); ctx.fill();
           ctx.drawImage(img, x + T / 2 - S / 2, y + T - S + T * .05, S, S);
+          ctx.globalAlpha = 1;
           continue;
         }
       }
@@ -132,6 +138,7 @@ export function drawMap(ctx: CanvasRenderingContext2D, map: MapDoc, tilesets: Ti
       if (ob.kind === 'warp') ctx.rect(x + T * .15, y + T * .15, T * .7, T * .7);
       else ctx.arc(x + T / 2, y + T / 2, T * .35, 0, Math.PI * 2);
       ctx.fill(); ctx.stroke();
+      ctx.globalAlpha = 1;
     }
   }
   if (o.grid && T >= 8) {

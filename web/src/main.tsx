@@ -5,12 +5,12 @@
 // /c/<id>/...                 dashboard del master (menu laterale + pagina)
 // /c/<id>/giocatore[/<all>]   vista del giocatore sul telefono
 import {StrictMode, useEffect, useState} from 'react';
-import {BookOpen, Bug, Dices, Heart, Info, Music, Footprints, LayoutDashboard, Map as MapIcon, Settings as SettingsIcon, Smartphone, Sprout, Swords, UserRound, Users} from 'lucide-react';
+import {BookOpen, BookText, Bug, Dices, Heart, Info, Music, Footprints, LayoutDashboard, Map as MapIcon, Settings as SettingsIcon, Smartphone, Sprout, Swords, UserRound, Users} from 'lucide-react';
 import {createRoot} from 'react-dom/client';
 import {BrowserRouter, NavLink, Navigate, Outlet, Route, Routes, useLocation, useParams} from 'react-router-dom';
 import {api, socket, StoreCtx, useCampaignStore, useMaster, useStore} from './api';
 import {LangSwitch, t} from './i18n';
-import {BadgeCase, badgeIndexes, prefetchDex} from './components';
+import {BadgeCase, badgeIndexes, prefetchDex, RollToast} from './components';
 import Home from './pages/Home';
 import Credits, {DONATE_URL} from './pages/Credits';
 import BugReport from './pages/BugReport';
@@ -27,6 +27,7 @@ import Dice from './pages/Dice';
 import Stories from './pages/Stories';
 import Settings from './pages/Settings';
 import Player from './pages/Player';
+import Manual from './pages/Manual';
 import MusicPage, {MusicPlayer, useMusic} from './pages/Music';
 import './style.css';
 
@@ -39,7 +40,7 @@ function CampaignShell({gm}: {gm: boolean}) {
   const store = useCampaignStore(cid!);
   useEffect(() => { if (store) prefetchDex(store.campaign.gen); }, [store?.campaign.gen]);
   if (!store || !store.ready) return <div className="loading">{t('Caricamento campagna…')}</div>;
-  return <StoreCtx.Provider value={store}>{gm ? <GmLayout /> : <Outlet />}</StoreCtx.Provider>;
+  return <StoreCtx.Provider value={store}>{gm ? <GmLayout /> : <Outlet />}<RollToast /></StoreCtx.Provider>;
 }
 
 /** Pallino verde/rosso: il bot della dashboard è collegato a Showdown? */
@@ -53,7 +54,7 @@ function ShowdownStatus() {
 const NAV: [string, string, typeof Sprout][] = [
   ['', 'Panoramica', LayoutDashboard], ['lotta', 'Lotta', Swords], ['squadra', 'Squadra e PC', Footprints], ['allenatori', 'Allenatori', UserRound],
   ['zone', 'Zone e incontri', Sprout], ['png', 'Squadre PNG', Users], ['mappe', 'Mappe', MapIcon], ['dadi', 'Dadi', Dices],
-  ['storie', 'Generatori di storie', BookOpen], ['musica', 'Musica (YouTube)', Music], ['impostazioni', 'Impostazioni', SettingsIcon],
+  ['storie', 'Generatori di storie', BookOpen], ['musica', 'Musica (YouTube)', Music], ['manuale', 'Manuale', BookText], ['impostazioni', 'Impostazioni', SettingsIcon],
 ];
 
 // acquerello del libretto diverso per sezione
@@ -123,6 +124,7 @@ createRoot(document.getElementById('root')!).render(
           <Route path="dadi" element={<Dice />} />
           <Route path="storie" element={<Stories />} />
           <Route path="musica" element={<MusicPage />} />
+          <Route path="manuale" element={<Manual />} />
           <Route path="impostazioni" element={<Settings />} />
         </Route>
         <Route path="*" element={<Navigate to="/" />} />

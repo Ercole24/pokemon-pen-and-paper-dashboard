@@ -7,7 +7,7 @@
 import {useCallback, useEffect, useRef, useState} from 'react';
 import {Pencil, Eraser, PaintBucket, Square, Pipette, SquareDashed, MapPin, ArrowLeft, Undo2, Redo2, Eye, EyeOff, ChevronUp, ChevronDown, Trash2} from 'lucide-react';
 import {Link, useNavigate, useParams} from 'react-router-dom';
-import {useStore, type MapDoc, type Tileset} from '../api';
+import {useMap, useStore, type MapDoc, type MapSummary, type Tileset} from '../api';
 import {useNpcImage} from './MapPlay';
 import {exportMap} from '../mapfiles';
 import {SpriteChooser} from '../components';
@@ -40,7 +40,7 @@ export default function MapEditorRoute() {
 }
 
 /** Scelta di una mappa con ricerca: vuoto = tutte, scrivi «pallet» = solo quelle che lo contengono. */
-export function MapPicker({maps, value, onPick, placeholder = t('Cerca una mappa…'), exclude}: {maps: MapDoc[], value?: string, onPick: (id: string) => void, placeholder?: string, exclude?: string}) {
+export function MapPicker({maps, value, onPick, placeholder = t('Cerca una mappa…'), exclude}: {maps: MapSummary[], value?: string, onPick: (id: string) => void, placeholder?: string, exclude?: string}) {
   const [q, setQ] = useState('');
   const [open, setOpen] = useState(false);
   const [hi, setHi] = useState(0);
@@ -79,7 +79,7 @@ export function MapPicker({maps, value, onPick, placeholder = t('Cerca una mappa
 function MapEditor() {
   const {mid} = useParams();
   const {map: maps, tileset: tilesets, zone: zones, save, npcteam, campaign} = useStore();
-  const stored = maps.find(x => x.id === mid);
+  const stored = useMap(mid);
   const [m, setM] = useState<MapDoc | null>(null);
   useEffect(() => { if (!m && stored) setM(stored); }, [stored]);
   if (!m) return <div className="page">{t(stored === undefined ? 'Mappa non trovata.' : 'Caricamento…')}</div>;
@@ -88,7 +88,7 @@ function MapEditor() {
 
 /** L'editor vero e proprio (stato, disegno, mouse, tastiera, salvataggio, pannelli). */
 function Editor({m, setM, tilesets, zones, maps, save, npcteam, gen}: {
-  m: MapDoc, setM: (fn: MapDoc | ((p: MapDoc) => MapDoc)) => void, tilesets: Tileset[], zones: any[], maps: MapDoc[], save: any, npcteam: any[], gen: number,
+  m: MapDoc, setM: (fn: MapDoc | ((p: MapDoc) => MapDoc)) => void, tilesets: Tileset[], zones: any[], maps: MapSummary[], save: any, npcteam: any[], gen: number,
 }) {
   const npcImage = useNpcImage(npcteam, gen, () => force(n => n + 1));
   const canvas = useRef<HTMLCanvasElement>(null);
@@ -503,7 +503,7 @@ function Palette({tilesets, tsId, setTsId, onPick, map}: {tilesets: Tileset[], t
  * Proprietà dell'oggetto selezionato: tipo (PNG, Poké Ball, porta, segnaposto), etichetta e campi del tipo
  * (squadra PNG o sprite e frase, strumento e nascosta, mappa e coordinate d'arrivo, colore).
  */
-function ObjectPanel({obj, setObj, maps, npcteam, onDelete}: {obj?: MapDoc['objects'][0], setObj: (p: any) => void, maps: MapDoc[], npcteam: any[], onDelete: () => void}) {
+function ObjectPanel({obj, setObj, maps, npcteam, onDelete}: {obj?: MapDoc['objects'][0], setObj: (p: any) => void, maps: MapSummary[], npcteam: any[], onDelete: () => void}) {
   if (!obj) return <div className="hint"><h3>{t('Oggetti')}</h3><p className="small">{t("Clicca sulla mappa per aggiungere un segnaposto, un PNG o una porta verso un'altra mappa. Clicca su un oggetto per modificarlo.")}</p></div>;
   return (
     <div className="stack">
@@ -517,7 +517,9 @@ function ObjectPanel({obj, setObj, maps, npcteam, onDelete}: {obj?: MapDoc['obje
       </select></label>}
       {obj.kind === 'npc' && !obj.npcTeam && <div className="stack"><span className="small muted">{t('…oppure solo uno sprite (abitante, commesso, mamma…)')}</span>
         <SpriteChooser value={obj.sprite || ''} placeholder={t('nessuno')} onChange={b => setObj({sprite: b})} /></div>}
-      {obj.kind === 'npc' && <label>{t('Cosa dice')}<textarea rows={3} value={obj.text || ''} placeholder={t('Benvenuto a Giubilopoli!')} onChange={e => setObj({text: e.target.value})} /></label>}
+      {obj.kind === 'npc' && <label>{t('Cosa dice ai giocatori')}<textarea rows={3} value={obj.text || ''} placeholder={t('Benvenuto a Giubilopoli!')} onChange={e => setObj({text: e.target.value})} /></label>}
+      {obj.kind === 'npc' && <label className="check"><input type="checkbox" checked={!!obj.hidden} onChange={e => setObj({hidden: e.target.checked})} /> {t('Nascosto (lo vede solo il Master)')}</label>}
+      {obj.kind !== 'warp' && <label>{t('Note per il Master (i giocatori non le vedono)')}<textarea rows={3} value={obj.gmText || ''} placeholder={t('Cosa sa, cosa vuole, cosa succede se…')} onChange={e => setObj({gmText: e.target.value})} /></label>}
       {obj.kind === 'item' && <>
         <label>{t('Strumento')}<input value={obj.item || ''} placeholder={t('es. Pozione, MT26, Caramella Rara')} onChange={e => setObj({item: e.target.value, label: e.target.value})} /></label>
         <label className="check"><input type="checkbox" checked={!!obj.hidden} onChange={e => setObj({hidden: e.target.checked})} /> {t('Nascosto (lo vede solo il Master)')}</label>

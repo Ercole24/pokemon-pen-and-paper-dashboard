@@ -3,9 +3,9 @@
 // Con squadre personali (avventura "ognuno per sé") ogni Allenatore ha la sua squadra e il suo PC.
 import {useState} from 'react';
 import {ArrowDownToLine, ArrowUpFromLine} from 'lucide-react';
-import {api, useStore, type Mon, type Trainer} from '../api';
+import {api, d, useStore, type Mon, type Trainer} from '../api';
 import {MonCard, MonEditor, Modal, newMon, NumberDie, SortableParty, useParty} from '../components';
-import {t} from '../i18n';
+import {t, tj} from '../i18n';
 
 /** La pagina. */
 export default function Party() {
@@ -62,10 +62,15 @@ function Team({owner, name}: {owner?: string, name?: string}) {
         <div className="row between wrap gap-s">
           <h2>{title('Squadra')} <span className="muted">{party.length}/6</span></h2>
           <div className="row gap-s">
+            <button className="btn-s" disabled={![...party, ...pc].some(m => m.hp !== undefined || m.status)} onClick={async () => {
+              for (const m of [...party, ...pc]) if (m.hp !== undefined || m.status) await save('mon', {...m, hp: undefined, status: ''});
+              addLog(t('Centro Pokémon: {what} curata.', {what: title('Squadra')}));
+            }}>{t('Centro Pokémon (cura tutti)')}</button>
             <button className="btn-s" onClick={async () => setExportText((await api('/dex/export', 'POST', {mons: party})).text)}>{t('Esporta per Showdown')}</button>
             <button className="btn-s btn-primary" onClick={() => setEdit({...newMon('', 5), owner: owner || undefined})}>+ Pokémon</button>
           </div>
         </div>
+        {owner !== '' && <LevelPool trainerId={own ? owner : undefined} />}
         <p className="small muted">{t("Trascina un Pokémon per cambiare l'ordine: il primo scende in campo per primo.")}</p>
         {party.length === 0 && <p className="muted">{t('Nessun Pokémon in squadra.')}</p>}
         <SortableParty party={party} render={(m, handle) => <MonCard mon={m} onClick={() => setEdit(m)}
@@ -150,5 +155,26 @@ function RouteLevels({groups, onClose}: {groups: {players: Trainer[], mons: Mon[
       })}
       <div className="row end"><button className="btn-primary" disabled={!used} onClick={apply}>{t('Applica')}</button></div>
     </Modal>
+  );
+}
+
+/**
+ * Livelli che i giocatori distribuiscono da soli dalla scheda dei loro Pokémon (Squadra, +1 LV).
+ * Il server non ne fa mai spendere più di quanti dati: dati, spesi e disponibili sono sempre in pari.
+ */
+function LevelPool({trainerId}: {trainerId?: string}) {
+  const {campaign, trainer} = useStore();
+  const [err, setErr] = useState('');
+  const o = trainerId ? trainer.find(x => x.id === trainerId) : campaign;
+  const given = o?.levelsGiven || 0, spent = o?.levelsSpent || 0;
+  const give = async (n: number) => { setErr(''); try { await api(`/c/${campaign.id}/levels`, 'POST', {trainerId, n}); } catch (e: any) { setErr(e.message); } };
+  return (
+    <div className="row gap-s wrap level-pool">
+      <span className="small">{tj('Livelli ai giocatori: {n} da distribuire', {n: <b>{given - spent}</b>})} <span className="muted">{t('(dati {given}, spesi {spent})', {given, spent})}</span></span>
+      <button className="btn-s" onClick={() => give(1)}>+1</button>
+      <button className="btn-s" onClick={() => give(d(4))} title={t('Tira 1d4 e li dà ai giocatori')}>+1d4</button>
+      <button className="btn-s" disabled={given - spent <= 0} onClick={() => give(-1)}>−1</button>
+      {err && <span className="error small">{err}</span>}
+    </div>
   );
 }

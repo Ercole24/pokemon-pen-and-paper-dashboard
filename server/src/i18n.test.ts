@@ -73,7 +73,7 @@ function keys() {
   // liste di dati dell'interfaccia
   const web = (f: string) => read(`web/src/${f}`);
   for (const name of ['WHO', 'DOES', 'WHAT', 'PLOTS']) literals(block(web('pages/Stories.tsx'), name)).forEach(add);
-  for (const [f, name] of [['pages/Battle.tsx', 'STATUS_IT'], ['components.tsx', 'CAT_IT'], ['pages/Music.tsx', 'REPEAT_LABEL'], ['pages/Player.tsx', 'TAB_LABEL']])
+  for (const [f, name] of [['components.tsx', 'STATUS_IT'], ['components.tsx', 'CAT_IT'], ['pages/Music.tsx', 'REPEAT_LABEL'], ['pages/Player.tsx', 'TAB_LABEL']])
     literals(block(web(f), name)).forEach(add);
   for (const m of block(web('main.tsx'), 'NAV').matchAll(/\['[^']*', '([^']+)'/g)) add(m[1]);
   for (const m of block(web('pages/MapEditor.tsx'), 'TOOLS').matchAll(/\['\w+', '([^']+)'/g)) add(m[1]);

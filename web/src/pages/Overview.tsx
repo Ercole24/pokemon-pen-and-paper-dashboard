@@ -64,7 +64,7 @@ export default function Overview() {
           <h2>{t('Lotte in corso')}</h2>
           {battles.length === 0 ? <p className="muted">{t('Nessuna.')}</p> : battles.map(b => (
             <div key={b.roomid} className="ov-battle">
-              <div className="row between"><strong>{b.title}</strong><a className="small" href={`${showdownUrl()}/${b.roomid}`} target="_blank">{t('Turno {n}', {n: b.turn})} · {t('apri')}</a></div>
+              <div className="row between"><strong>{b.title}</strong><a className="small" href={`${showdownUrl()}/${b.roomid}`} target="showdown">{t('Turno {n}', {n: b.turn})} · {t('apri')}</a></div>
               <div className="battle-sides"><Side m={b.active.p1} label={t('Squadra')} /><span className="vs">VS</span><Side m={b.active.p2} label={t('Avversario')} /></div>
             </div>
           ))}

@@ -353,7 +353,7 @@ details > summary { cursor: pointer; font-weight: 700; }
 .player-body { flex: 1; padding: 1rem; display: flex; flex-direction: column; gap: 1.2rem; padding-bottom: 6rem; }
 .player-body > h2 { align-self: flex-start; font: 11px/1 var(--pixel); text-transform: uppercase; background: var(--case); color: #fff; padding: .7em .85em; border-radius: 7px; }
 .player-body .mapview-canvas { min-height: 62vh; border-radius: 14px; }
-.tabbar { position: fixed; bottom: 0; left: 0; right: 0; display: grid; grid-template-columns: repeat(5, 1fr); background: var(--case); padding-bottom: env(safe-area-inset-bottom); z-index: 30; }
+.tabbar { position: fixed; bottom: 0; left: 0; right: 0; display: grid; grid-template-columns: repeat(6, 1fr); background: var(--case); padding-bottom: env(safe-area-inset-bottom); z-index: 30; }
 .tabbar button { border: 0; border-radius: 0; padding: .65rem .2rem .7rem; font-size: .75rem; background: transparent; color: var(--case-dim); flex-direction: column; gap: .25rem; box-shadow: none; transform: none; }
 .tabbar button svg { width: 22px; height: 22px; }
 .tabbar button.active { color: var(--gold); }
@@ -598,6 +598,59 @@ button.badge-slot.got:hover img { transform: scale(1.08) rotate(-4deg); }
 .music-grip { flex: none; width: 18px; padding: 0; border: 0; background: transparent; color: var(--case-dim); cursor: grab; touch-action: none; }
 .music-grip:hover:not(:disabled) { background: transparent; transform: none; box-shadow: none; color: var(--case-ink); }
 .music-grip:active { cursor: grabbing; }
+
+/* tooltip della mappa (mouse sopra PNG, cartelli, segnalini) */
+.map-tip { position: fixed; z-index: 40; pointer-events: none; max-width: 280px;
+  background: var(--paper); border: 3px solid var(--line); border-radius: 8px; padding: 6px 10px; box-shadow: 0 4px 12px rgba(0,0,0,.25); }
+.map-tip strong { font: 9px/1.4 var(--pixel); text-transform: uppercase; color: var(--red); }
+.map-tip p { margin: 2px 0 0; font-size: .9rem; white-space: pre-wrap; }
+.gm-note { margin: 4px 0 0; padding: 4px 8px; border-left: 3px solid #e0a020; background: rgba(224,160,32,.12); white-space: pre-wrap; }
+.btn-icon.active { background: var(--red); color: #fff; border-color: var(--red); }
+
+/* tiri di dado condivisi */
+.roll-toasts { position: fixed; top: 12px; right: 12px; z-index: 100; display: flex; flex-direction: column; gap: 6px; pointer-events: none; max-width: min(360px, calc(100vw - 24px)); }
+.roll-toast { background: var(--paper); border: 3px solid var(--c); border-left-width: 8px; border-radius: 8px; padding: 6px 10px; box-shadow: 0 4px 12px rgba(0,0,0,.25); animation: toast-in .18s ease-out; font-size: .95rem; }
+.roll-toast b { color: var(--c); }
+@keyframes toast-in { from { transform: translateY(-8px); opacity: 0; } }
+.roll-log { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; max-height: 320px; overflow: auto; }
+.roll-who { color: #fff; border-radius: 4px; padding: 0 6px; font-weight: 700; font-size: .85rem; }
+
+/* PS tra le lotte */
+.mon-hp { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.mon-hp .hpbar { margin: 0; width: 90px; }
+.mon-hp .ko { color: var(--red); }
+.mon-card.fainted .mon-port { filter: grayscale(1) opacity(.6); }
+.hp-controls { display: flex; flex-direction: column; gap: 6px; padding: 8px 0; }
+.stat-bars .grow { color: #2f9e4f; font-weight: 700; }
+.stat-bars caption { text-align: left; caption-side: top; padding-bottom: 4px; }
+
+/* tabella dei tipi collegata alla partita */
+.type-matchup { display: flex; flex-direction: column; gap: 8px; }
+.matchup { width: 100%; border-collapse: collapse; }
+.matchup td, .matchup th { padding: 4px 6px; border-bottom: 1px solid rgba(0,0,0,.08); text-align: left; vertical-align: middle; }
+.mult { display: inline-block; min-width: 2.4em; text-align: center; border-radius: 4px; font-weight: 700; padding: 0 4px; }
+.mult.mhigh, .type-grid td.mhigh { background: #3fae5b; color: #fff; }
+.mult.mlow, .type-grid td.mlow { background: #e5483a; color: #fff; }
+.mult.m0, .type-grid td.m0 { background: #1b2033; color: #fff; }
+.mult.m1 { background: rgba(0,0,0,.08); }
+.type-grid-wrap { overflow-x: auto; }
+.type-grid { border-collapse: collapse; font-size: .72rem; }
+.type-grid th, .type-grid td { border: 1px solid rgba(0,0,0,.1); padding: 2px 3px; text-align: center; min-width: 26px; }
+.type-grid th.ours, .type-grid td.ours { outline: 2px solid #f2c230; outline-offset: -2px; }
+.type-grid tr.opp th { background: #e5483a; color: #fff; }
+.manual kbd { border: 1px solid var(--line); border-radius: 4px; padding: 0 5px; margin: 0 1px; font-size: .85em; background: #fff; }
+
+/* chi mandare in campo */
+.switch-advisor { display: flex; flex-direction: column; gap: 8px; }
+.advice { display: flex; gap: 8px; align-items: center; border: 2px solid rgba(0,0,0,.12); border-radius: 10px; padding: 6px 8px; background: #fff; }
+.advice.best { border-color: #3fae5b; box-shadow: 0 0 0 2px rgba(63,174,91,.25); }
+.advice.ko { opacity: .5; filter: grayscale(1); }
+.advice-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.advice-bars { display: grid; grid-template-columns: auto 1fr auto; gap: 2px 8px; align-items: center; font-size: .85rem; }
+.pbar { height: 10px; background: rgba(0,0,0,.08); border-radius: 5px; overflow: hidden; }
+.pbar-fill { height: 100%; border-radius: 5px; transition: width .4s; }
+.pbar-fill.good { background: #3fae5b; } .pbar-fill.bad { background: #e5483a; }
+.hp-controls label.row { flex-direction: row; align-items: center; gap: 6px; }
 
 /* ---------- selettore della lingua (in alto a destra) ---------- */
 .lang-switch { position: relative; }

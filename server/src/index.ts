@@ -43,10 +43,28 @@ const campaign = (cid: string) => {
   if (!c) throw fail(404, 'Campagna inesistente');
   return c;
 };
+/**
+ * Mappa senza i livelli di tile (il grosso dei dati): l'elenco e gli aggiornamenti in tempo reale viaggiano così,
+ * la mappa completa si scarica solo quando la si apre (GET /api/c/<id>/map/<mappa>). layersRev cambia quando cambiano i livelli.
+ */
+const liteMap = ({layers: _, ...m}: db.Doc) => m;
 /** Avvisa i browser della campagna che un documento è cambiato. */
-const emitDoc = (cid: string, kind: string, doc: db.Doc) => io.to(cid).emit('doc', {kind, doc});
+const emitDoc = (cid: string, kind: string, doc: db.Doc) => io.to(cid).emit('doc', {kind, doc: kind === 'map' ? liteMap(doc) : doc});
 /** Salva nel database e avvisa i browser: è il modo standard di scrivere. */
-const save = (cid: string, kind: string, doc: any) => { const d = db.put(cid, kind, doc); emitDoc(cid, kind, d); return d; };
+const save = (cid: string, kind: string, doc: any) => {
+  if (kind === 'map' && doc.id) {
+    const old = db.get(doc.id);
+    // salvataggio senza livelli (da una mappa "leggera"): tiene quelli salvati
+    if (old && !doc.layers) doc = {...doc, layers: old.layers, layersRev: old.layersRev};
+    else if (old && JSON.stringify(old.layers) !== JSON.stringify(doc.layers)) doc = {...doc, layersRev: Date.now()};
+  }
+  if (kind === 'mon' && doc.id) {
+    // ricorda il livello prima dell'ultima crescita: la scheda mostra di quanto sono salite le statistiche
+    const old = db.get(doc.id);
+    if (old && doc.level > old.level) doc = {...doc, prevLevel: old.level};
+  }
+  const d = db.put(cid, kind, doc); emitDoc(cid, kind, d); return d;
+};
 /** Aggiunge una riga al diario della campagna (lotte, catture…). */
 const log = (cid: string, text: string, type = 'info') => save(cid, 'log', {t: Date.now(), text, type});
 
@@ -62,8 +80,13 @@ app.get('/api/config.js', async (_req, reply) => reply.type('text/javascript').s
 /** Elenco delle campagne. */
 app.get('/api/campaigns', async () => db.list('_', 'campaign'));
 /** Crea o aggiorna una campagna; ai campi mancanti si danno i valori di default. */
+/** I contatori dei livelli si cambiano solo con /levels e /levelup: un salvataggio normale tiene quelli già salvati. */
+const keepLevelCounters = (body: any) => {
+  const old = body?.id && db.get(body.id);
+  return {...body, levelsGiven: old?.levelsGiven, levelsSpent: old?.levelsSpent};
+};
 app.put('/api/campaigns', async req => {
-  const body: any = req.body;
+  const body: any = keepLevelCounters(req.body);
   const c = db.put('_', 'campaign', {gen: 9, region: '', shinyRate: 4096, hiddenAbilityChance: 0.05,
     teamUser: langOf(req) === 'it' ? 'squadra' : 'team', gmUser: 'master', ...body});
   io.emit('campaign', c);
@@ -80,14 +103,21 @@ app.delete('/api/campaigns/:cid', async req => {
 app.get('/api/c/:cid/:kind', async req => {
   const {cid, kind} = req.params as any;
   if (!KINDS.has(kind)) throw fail(400, 'Tipo sconosciuto');
-  return db.list(cid, kind);
+  const docs = db.list(cid, kind);
+  return kind === 'map' ? docs.map(liteMap) : docs;
+});
+/** Un documento completo (le mappe con i livelli). */
+app.get('/api/c/:cid/:kind/:id', async req => {
+  const d = db.get((req.params as any).id);
+  if (!d) throw fail(404, 'Non trovato');
+  return d;
 });
 /** Crea o aggiorna un documento (con id = aggiorna, senza = crea). */
 app.put('/api/c/:cid/:kind', async req => {
   const {cid, kind} = req.params as any;
   campaign(cid);
   if (!KINDS.has(kind)) throw fail(400, 'Tipo sconosciuto');
-  return save(cid, kind, req.body);
+  return save(cid, kind, kind === 'trainer' ? keepLevelCounters(req.body) : req.body);
 });
 /** Cancella un documento e avvisa i browser. */
 app.delete('/api/c/:cid/:kind/:id', async req => {
@@ -98,6 +128,54 @@ app.delete('/api/c/:cid/:kind/:id', async req => {
 });
 /** Scrive una riga nel diario. */
 app.post('/api/c/:cid/log', async req => log((req.params as any).cid, (req.body as any).text, (req.body as any).type));
+
+// --- livelli distribuiti dai giocatori ---
+/**
+ * Il master dà livelli (levelsGiven), i giocatori li spendono sui Pokémon (levelsSpent): mai più spesi che dati.
+ * Squadra condivisa = un'unica scorta nella campagna; squadre personali = una per Allenatore.
+ */
+const poolOwner = (c: db.Doc, trainerId?: string) => {
+  if (c.teamMode !== 'own') return {doc: c, kind: 'campaign'};
+  const t = trainerId && db.get(trainerId);
+  if (!t) throw fail(400, 'Il Pokémon non ha un Allenatore: assegnalo prima');
+  return {doc: t, kind: 'trainer'};
+};
+const savePool = (cid: string, o: {doc: db.Doc, kind: string}) => {
+  if (o.kind === 'campaign') io.emit('campaign', db.put('_', 'campaign', o.doc));
+  else save(cid, 'trainer', o.doc);
+};
+/** Master: aggiunge (o toglie, se non ancora spesi) livelli da distribuire. */
+app.post('/api/c/:cid/levels', async req => {
+  const {cid} = req.params as any;
+  const {trainerId, n} = req.body as {trainerId?: string, n: number};
+  const o = poolOwner(campaign(cid), trainerId);
+  const given = (o.doc.levelsGiven || 0) + Math.trunc(n), spent = o.doc.levelsSpent || 0;
+  if (given < spent) throw fail(400, 'Non puoi togliere livelli già spesi');
+  o.doc = {...o.doc, levelsGiven: given, levelsSpent: spent};
+  savePool(cid, o);
+  const tr = (s: string, vars?: Record<string, unknown>) => translate(langOf(req), s, vars);
+  const what = tr(n > 0 ? 'Il Master dà {n} livelli da distribuire' : 'Il Master toglie {n} livelli da distribuire', {n: Math.abs(n)});
+  log(cid, `${what}${o.kind === 'trainer' ? tr(' a {name}', {name: o.doc.name}) : ''} ${tr('(disponibili: {n}).', {n: given - spent})}`);
+  return o.doc;
+});
+/** Giocatore: +1 livello a un suo Pokémon, solo se nella scorta ne resta uno. Risponde con mosse nuove ed evoluzioni possibili. */
+app.post('/api/c/:cid/levelup', async req => {
+  const {cid} = req.params as any;
+  const {monId, who} = req.body as {monId: string, who?: string};
+  const c = campaign(cid);
+  const mon = db.get(monId);
+  if (!mon) throw fail(404, 'Pokémon non trovato');
+  if (mon.level >= 100) throw fail(400, 'È già al livello 100');
+  const o = poolOwner(c, mon.owner);
+  const given = o.doc.levelsGiven || 0, spent = o.doc.levelsSpent || 0;
+  if (spent >= given) throw fail(400, 'Non ci sono livelli da distribuire: li dà il Master');
+  o.doc = {...o.doc, levelsSpent: spent + 1};
+  savePool(cid, o);
+  save(cid, 'mon', {...mon, level: mon.level + 1});
+  log(cid, translate(langOf(req), '{who}: {name} sale al LV {level} (livelli rimasti: {left}).',
+    {who: who || translate(langOf(req), 'Un giocatore'), name: mon.nickname || mon.species, level: mon.level + 1, left: given - spent - 1}), 'catch');
+  return dex.levelUpInfo(c.gen, mon.species, mon.level, mon.level + 1);
+});
 
 // --- dati Pokémon ---
 /** Pokédex della generazione. */
@@ -171,8 +249,11 @@ app.post('/api/c/:cid/battle', async req => {
   const {cid} = req.params as any;
   const c = campaign(cid);
   const body = req.body as {playerMonIds: string[], opponent: dex.Mon[], kind: 'wild' | 'trainer', title?: string, gmControls?: boolean, teamUser?: string, gmUser?: string};
-  const mine = body.playerMonIds.map(id => db.get(id)).filter(Boolean) as any[];
-  if (!mine.length) throw fail(400, 'Scegli almeno un Pokémon della squadra');
+  const chosen = body.playerMonIds.map(id => db.get(id)).filter(Boolean) as any[];
+  if (!chosen.length) throw fail(400, 'Scegli almeno un Pokémon della squadra');
+  // i Pokémon KO restano fuori: non si riprendono da soli tra una lotta e l'altra
+  const mine = chosen.filter(m => m.hp !== 0);
+  if (!mine.length) throw fail(400, 'I Pokémon scelti sono tutti KO: curali prima (Centro Pokémon o strumenti).');
   if (!body.opponent?.length) throw fail(400, "Manca l'avversario");
   const tr = (s: string, vars?: Record<string, unknown>) => translate(langOf(req), s, vars);
   body.gmControls = true; // l'avversario lo controlla sempre il Master
@@ -180,7 +261,8 @@ app.post('/api/c/:cid/battle', async req => {
   const roomid = await sd.createBattle({
     format: dex.formatId(c.gen), p1: body.teamUser || c.teamUser, p2: body.gmControls ? (body.gmUser || c.gmUser) : undefined,
     team1: dex.packTeam(mine), team2: dex.packTeam(body.opponent), title,
-    meta: {cid, kind: body.kind, opponent: body.opponent, playerMonIds: body.playerMonIds},
+    hp1: mine.map(m => ({hp: m.hp ?? null, status: m.status || ''})), // PS e stato rimasti dalla lotta precedente
+    meta: {cid, kind: body.kind, opponent: body.opponent, playerMonIds: mine.map(m => m.id), lang: langOf(req)},
   });
   log(cid, tr('Lotta iniziata: {title}', {title}), 'battle');
   return {roomid};
@@ -231,6 +313,9 @@ app.post('/api/c/:cid/catch', async req => {
 });
 
 // --- tempo reale ---
+/** Ultimi tiri di dado per campagna (dal più recente). */
+const rolls = new Map<string, {who: string, color?: string, text: string, t: number}[]>();
+app.get('/api/c/:cid/rolls', async req => rolls.get((req.params as any).cid) || []);
 /**
  * Tempo reale: ogni browser entra nella stanza della sua campagna; i segnalini spostati sulla mappa
  * vengono salvati nella mappa e così arrivano a tutti.
@@ -247,6 +332,16 @@ io.on('connection', socket => {
     map.tokens = (map.tokens || []).filter((t: any) => t.id !== token.id).concat(token);
     save(cid, 'map', map);
   });
+  // tiro di dado: va a tutti (notifica e storico); gli ultimi 30 restano in memoria, non nel database
+  socket.on('roll', (r: any) => {
+    if (!r?.cid) return;
+    const roll = {who: String(r.who || '?').slice(0, 40), color: r.color, text: String(r.text || '').slice(0, 120), t: Date.now()};
+    const list = rolls.get(r.cid) || [];
+    rolls.set(r.cid, [roll, ...list].slice(0, 30));
+    io.to(r.cid).emit('roll', roll);
+  });
+  // puntatore laser: non si salva, si inoltra agli altri browser della campagna
+  socket.on('laser', (l: any) => l?.cid && socket.to(l.cid).emit('laser', l));
   socket.on('untoken', ({cid, mapId, id}) => {
     // segnalino tolto dalla mappa (master)
     const map = db.get(mapId);
@@ -275,7 +370,28 @@ function checkMasters() {
 }
 /** Stato di Showdown e delle lotte inoltrato a tutti i browser. */
 sd.events.on('status', s => io.emit('status', s));
-sd.events.on('battle', b => io.emit('battle', b));
+sd.events.on('battle', b => { io.emit('battle', b); if (b.ended && !b.hpSaved && b.meta?.cid) saveBattleHp(b); });
+/**
+ * Fine lotta: PS e stato dei Pokémon della squadra restano com'erano (KO compresi), così la lotta dopo riparte da lì.
+ * Il bot vede i PS in percentuale (è spettatore): si riconvertono in PS veri, con al massimo 1 PS di arrotondamento.
+ */
+function saveBattleHp(b: sd.BattleState) {
+  b.hpSaved = true;
+  const c = db.get(b.meta.cid);
+  if (!c) return;
+  const mons = (b.meta.playerMonIds as string[]).map(id => db.get(id)).filter(Boolean) as db.Doc[];
+  const used = new Set<string>(), out: string[] = [];
+  for (const [name, st] of Object.entries(b.p1mons)) {
+    const m = mons.find(x => !used.has(x.id) && (x.nickname || x.species) === name) || mons.find(x => !used.has(x.id) && name.startsWith(x.species));
+    if (!m) continue;
+    used.add(m.id);
+    const max = dex.maxHp(c.gen, m as any);
+    const hp = st.fainted ? 0 : Math.max(1, Math.min(max, Math.round(st.hp / 100 * max)));
+    save(b.meta.cid, 'mon', {...m, hp, status: st.fainted ? '' : st.status});
+    out.push(`${name} ${hp ? `${hp}/${max} ${translate(b.meta.lang || 'en', 'PS')}${st.status ? ` (${st.status})` : ''}` : 'KO'}`);
+  }
+  if (out.length) log(b.meta.cid, translate(b.meta.lang || 'en', 'Dopo la lotta: {list}.', {list: out.join(', ')}), 'battle');
+}
 
 // --- frontend compilato ---
 /**
