@@ -5,6 +5,13 @@
 > Unofficial fan project. Pokémon belongs to Nintendo, The Pokémon Company, Game Freak and Creatures Inc.
 > See the [legal notice](#legal-notice). · Progetto di fan non ufficiale: vedi le [note legali](#note-legali).
 
+**Thank you, Sage G.C.!** This dashboard exists because of **[Pokémon Pen & Paper Version](https://sagegc.itch.io/pkmn)**,
+the tabletop RPG created by Sage G.C.: rules and rulebook are on the [official page](https://sagegc.itch.io/pkmn).
+This is an independent project, not affiliated with or endorsed by the author.
+· **Grazie, Sage G.C.!** Questa dashboard esiste grazie al suo gioco di ruolo
+[Pokémon Pen & Paper Version](https://sagegc.itch.io/pkmn): regole e manuale sono sulla [pagina ufficiale](https://sagegc.itch.io/pkmn).
+È un progetto indipendente, non affiliato né approvato dall'autore.
+
 ---
 
 ## English
@@ -95,6 +102,7 @@ Use **Report a bug** in the dashboard or in the start window, or open the
 ### Official game and support
 **Pokémon Pen & Paper Version** is made by **Sage G.C.**, not by this project: rulebook, rules and updates are on its
 official page, **[sagegc.itch.io/pkmn](https://sagegc.itch.io/pkmn)**. If you enjoy it, support them there.
+A big thank you to Sage G.C. for creating the game and sharing it: this project would not exist without it.
 
 ### Legal notice
 Pokémon and all related names, characters, images, sounds and trademarks are the property of **Nintendo**,
@@ -221,6 +229,7 @@ Usa **Segnala un bug** nella dashboard o nella finestra di avvio, oppure apri il
 ### Gioco ufficiale e sostegno
 **Pokémon Pen & Paper Version** è opera di **Sage G.C.**, non di questo progetto: manuale, regole e aggiornamenti
 sono sulla sua pagina ufficiale, **[sagegc.itch.io/pkmn](https://sagegc.itch.io/pkmn)**. Se ti piace, sostienili lì.
+Un grande grazie a Sage G.C. per aver creato il gioco e averlo condiviso: senza, questo progetto non esisterebbe.
 
 ### Note legali
 Pokémon e tutti i nomi, personaggi, immagini, suoni e marchi collegati sono di proprietà di **Nintendo**,
