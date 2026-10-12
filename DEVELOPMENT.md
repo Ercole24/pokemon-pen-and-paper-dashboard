@@ -4,6 +4,7 @@ Note per chi lavora sul codice. Per installare e giocare: [README](README.md).
 
 ## Avvio con Docker, a mano
 ```
+mkdir -p data                  # cartella delle campagne: se la crea Docker è di root e il container non ci scrive
 docker compose up -d --build   # la prima volta costruisce le immagini (qualche minuto)
 docker compose logs -f         # log
 docker compose down            # ferma tutto

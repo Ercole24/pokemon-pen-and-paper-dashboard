@@ -206,6 +206,8 @@ async function start(s, browser, skipAssets) {
     step('stop', 'ok');
 
     step('up', 'wait', 'la prima volta costruisce le immagini: qualche minuto');
+    // cartella delle campagne creata da noi: se la crea Docker (Linux) è di root e il container (uid 1000) non può scriverci
+    mkdirSync(process.env.PNP_DATA_DIR || 'data', {recursive: true});
     await docker(['compose', 'up', '-d', '--build'], {PNP_AUTO_STOP: String(s.autoStop), PNP_ASSETS: s.assets});
     step('up', 'ok');
 

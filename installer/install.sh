@@ -76,7 +76,7 @@ say "$(m "Downloading $NAME to $DIR" "Scarico $NAME in $DIR")"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 if [ -f "$ARCHIVE" ]; then cp "$ARCHIVE" "$tmp/src.tar.gz"; else curl -fL --progress-bar "$ARCHIVE" -o "$tmp/src.tar.gz"; fi
-mkdir -p "$tmp/src" "$DIR"
+mkdir -p "$tmp/src" "$DIR" "$DIR/data" # data creata da noi: creata da Docker sarebbe di root
 tar -xzf "$tmp/src.tar.gz" -C "$tmp/src" --strip-components 1
 # aggiornamento: sostituisce il codice, tiene campagne (data/) e scelte del launcher
 find "$DIR" -mindepth 1 -maxdepth 1 ! -name data ! -name .launcher.json -exec rm -rf {} +
