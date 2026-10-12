@@ -6,6 +6,7 @@
 // - il disegno usa un <canvas> 2D: zoom = pixel sullo schermo per pixel del tile.
 import type {MapDoc, MapLayer, Tileset} from './api';
 import {t} from './i18n';
+import {fieldOf} from '../../server/src/field';
 
 /** Immagini dei tileset già caricate (una per tileset). */
 const images = new Map<string, {url: string, img: HTMLImageElement}>();
@@ -99,8 +100,12 @@ export function drawMap(ctx: CanvasRenderingContext2D, map: MapDoc, tilesets: Ti
       }
       ctx.globalAlpha = 1;
     } else if (layer.type === 'collision' && o.collision) {
-      ctx.fillStyle = 'rgba(220,40,40,.38)';
-      layer.data.forEach((v, i) => v && ctx.fillRect((i % map.width) * T, Math.floor(i / map.width) * T, T, T));
+      // muro rosso; caselle da MN (acqua, albero…) col colore della mossa (FIELD in server/src/field.ts)
+      layer.data.forEach((v, i) => {
+        if (!v) return;
+        ctx.fillStyle = (fieldOf(v)?.color || '#dc2828') + '61';
+        ctx.fillRect((i % map.width) * T, Math.floor(i / map.width) * T, T, T);
+      });
     } else if (layer.type === 'zone' && o.zones) {
       layer.data.forEach((v, i) => {
         if (!v) return;
@@ -115,6 +120,12 @@ export function drawMap(ctx: CanvasRenderingContext2D, map: MapDoc, tilesets: Ti
       if (ob.kind === 'item') {
         if (ob.hidden && !o.objects) continue;
         drawPokeball(ctx, x + T / 2, y + T / 2, T * .32, !!ob.hidden);
+        continue;
+      }
+      if (ob.kind === 'obstacle') {
+        // ostacolo da MN: icona nell'angolo, il disegno della mappa (albero, masso…) resta visibile
+        ctx.font = `${Math.max(8, T * .45)}px sans-serif`; ctx.textAlign = 'right'; ctx.textBaseline = 'bottom';
+        ctx.fillText(fieldOf(ob.field || 0)?.icon || '❓', x + T, y + T);
         continue;
       }
       if (ob.kind === 'npc') {
@@ -196,7 +207,7 @@ export function exportTmj(map: MapDoc, tilesets: Tileset[]) {
     layers: [
       ...map.layers.map(l => ({
         id: id++, name: l.name, type: 'tilelayer', x: 0, y: 0, width: map.width, height: map.height, opacity: 1, visible: l.visible !== false,
-        data: l.type === 'tile' ? l.data : l.data.map(v => v ? 1 : 0),
+        data: l.type === 'tile' || l.type === 'collision' ? l.data : l.data.map(v => v ? 1 : 0),
         properties: l.type !== 'tile' ? [{name: 'pnp', type: 'string', value: l.type}, ...(l.type === 'zone' ? [{name: 'zoneRefs', type: 'string', value: JSON.stringify(map.zoneRefs)}] : [])] : undefined,
         // nota: collisioni e zone esportate come livelli marcati con proprietà "pnp"
       })),
@@ -249,7 +260,7 @@ export function importTmj(json: any, name: string, tilesets: Tileset[]): {map: M
   for (const l of json.layers || []) {
     if (l.type === 'tilelayer' && Array.isArray(l.data)) {
       const pnp = l.properties?.find((p: any) => p.name === 'pnp')?.value;
-      if (pnp === 'collision') map.layers.push({name: l.name, type: 'collision', data: l.data.map((v: number) => v ? 1 : 0), visible: true});
+      if (pnp === 'collision') map.layers.push({name: l.name, type: 'collision', data: l.data.map((v: number) => fieldOf(v) ? v : v ? 1 : 0), visible: true});
       else if (pnp === 'zone') {
         map.layers.push({name: l.name, type: 'zone', data: l.data, visible: true});
         try { map.zoneRefs = JSON.parse(l.properties.find((p: any) => p.name === 'zoneRefs')?.value || '[]'); } catch {}

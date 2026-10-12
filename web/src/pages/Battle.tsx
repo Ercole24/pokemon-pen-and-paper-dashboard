@@ -12,7 +12,7 @@ import {t, tj} from '../i18n';
 
 /** Stato di una lotta come lo manda il server (vedi server/src/showdown.ts). */
 export type BattleState = {
-  roomid: string, title: string, ended: boolean, winner?: string, turn: number, auto: boolean,
+  roomid: string, title: string, ended: boolean, winner?: string, turn: number, auto: boolean, players: {p1: string, p2: string},
   active: {p1?: SideMon, p2?: SideMon}, volatiles: {p2: string[]}, fainted: {p1: string[], p2: string[]},
   log: string[], meta?: {cid: string, kind: 'wild' | 'trainer', opponent: Mon[], playerMonIds: string[]},
 };
@@ -87,6 +87,7 @@ export default function Battle() {
   const [online, setOnline] = useState<OnlineUser[]>([]);
   const [teamUser, setTeamUser] = useState(own && fighterName || campaign.teamUser);
   const [gmUser, setGmUser] = useState(campaign.gmUser);
+  const [rotate, setRotate] = useState(false); // squadra condivisa: a ogni turno comanda un altro giocatore
   /** Chi è collegato a Showdown, ricontrollato ogni 5 secondi. */
   const refreshUsers = () => api<OnlineUser[]>('/showdown/users').then(setOnline);
   useEffect(() => { refreshUsers(); const t = setInterval(refreshUsers, 5000); return () => clearInterval(t); }, []);
@@ -114,7 +115,7 @@ export default function Battle() {
     try {
       const team = npcteam.find(t => t.id === teamId);
       const {roomid} = await api(`/c/${campaign.id}/battle`, 'POST', {
-        playerMonIds: party.filter(p => chosen.includes(p.id!)).map(p => p.id!), opponent, kind, gmControls: true, teamUser, gmUser,
+        playerMonIds: party.filter(p => chosen.includes(p.id!)).map(p => p.id!), opponent, kind, gmControls: true, teamUser, gmUser, npcTeamId: teamId, rotate: !own && rotate,
         title: kind === 'trainer' && team ? `${team.trainerClass ? t(team.trainerClass) + ' ' : ''}${team.name}` : undefined,
       });
       window.open(`${showdownUrl()}/${roomid}`, 'showdown');
@@ -177,6 +178,7 @@ export default function Battle() {
             ))}
           </div>
           <ShowdownSeats online={online} refresh={refreshUsers} teamLabel={own && fighterName ? t('Gioca per {name}', {name: fighterName}) : t('Gioca per la squadra')} teamUser={teamUser} setTeamUser={setTeamUser} gmUser={gmUser} setGmUser={setGmUser} />
+          {!own && <label className="check"><input type="checkbox" checked={rotate} onChange={e => setRotate(e.target.checked)} /> {t('Comando a turno: a ogni turno la squadra la comanda un altro giocatore collegato a Showdown (col nome del suo Allenatore)')}</label>}
           {!opponent.length && <p className="small">{t(kind === 'wild' ? 'Prima genera o scegli il Pokémon selvatico.' : 'Prima scegli la squadra avversaria.')}</p>}
           {err && <p className="error">{err}</p>}
           <div className="row gap-s">

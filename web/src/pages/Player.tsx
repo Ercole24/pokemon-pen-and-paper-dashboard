@@ -12,7 +12,7 @@ import type {Mon} from '../api';
 import {spriteForTrainer, trainerSpriteUrl} from '../trainers';
 import {TrainerSheet, classOf} from './Trainers';
 import {useClasses} from '../components';
-import {MapView, playerColor} from './MapPlay';
+import {MapView, playerColor, TableBar} from './MapPlay';
 import Manual from './Manual';
 import {useBattles, HpBar, SwitchAdvisor, TypeMatchup} from './Battle';
 import {ALL_STATS} from '../../../server/src/classes';
@@ -38,6 +38,7 @@ export default function Player() {
   const badges = useBadges();
   const battles = useBattles(campaign.id).filter(b => !b.ended);
   const [stat, setStat] = useState(ALL_STATS[0]);
+  const [assist, setAssist] = useState(false);
   const activeMap = useMap(campaign.activeMap);
 
   if (!me) {
@@ -54,6 +55,8 @@ export default function Player() {
     );
   }
   const mods = classOf(me, classes)?.mods || {};
+  /** Link a Showdown (o a una lotta) che dà subito alla scheda il nome dell'Allenatore (vedi showdown-plugin/client.mjs). */
+  const sdLink = (roomid = '') => `${showdownUrl()}/${roomid}?pnpname=${encodeURIComponent(me.name)}`;
 
   return (
     <RollerCtx.Provider value={{who: me.name, color: playerColor(trainer, me.id)}}>
@@ -66,10 +69,11 @@ export default function Player() {
         <Link to=".." relative="path" className="small">{t('cambia')}</Link>
       </header>
       {battles.length > 0 && (
-        <a className="battle-banner" href={`${showdownUrl()}/${battles.at(-1)!.roomid}`} target="showdown">
+        <a className="battle-banner" href={sdLink(battles.at(-1)!.roomid)} target="showdown">
           <Swords /> {battles.at(-1)!.title}: {t('apri la lotta')}
         </a>
       )}
+      <TableBar map={activeMap} myId={me.id} />
       <main className="player-body">
         {tab === 'scheda' && <TrainerSheet initial={me} playerMode />}
         {tab === 'squadra' && <>
@@ -93,7 +97,8 @@ export default function Player() {
               {ALL_STATS.map(s => <option key={s} value={s}>{t(s)} {mods[s] ? `(${mods[s] > 0 ? '+'.repeat(mods[s]) : '−'.repeat(-mods[s])})` : ''}</option>)}
             </select>
           </label>
-          <FudgeRoller modifier={mods[stat] || 0} />
+          <label className="check"><input type="checkbox" checked={assist} onChange={e => setAssist(e.target.checked)} /> {t('Aiuto Pokémon (+1dF)')}</label>
+          <FudgeRoller modifier={mods[stat] || 0} extraDie={assist} />
           <h3>{t('Altri dadi')}</h3>
           <div className="dice-grid">{[4, 6, 20, 100].map(s => <NumberDie key={s} sides={s} />)}</div>
           <h3>{t('Tiri del tavolo')}</h3>
@@ -107,17 +112,18 @@ export default function Player() {
         {tab === 'lotte' && <section className="stack">
           <div className="panel">
             <h2>{t('Come entrare in lotta')}</h2>
+            <a className="btn btn-primary" href={sdLink()} target="showdown"><Swords /> {t('Apri Showdown come {name}', {name: me.name})}</a>
             <ol className="steps">
-              <li>{tj("Apri {url} in un'altra scheda.", {url: <a href={showdownUrl()} target="showdown">{showdownUrl()}</a>})}</li>
-              <li><b>{t('Non scegliere nessun nome.')}</b> {t('In alto a destra vedi “Guest” e un numero: dillo al Master.')}</li>
-              <li>{t('Il Master ti dà il nome dalla dashboard: lo vedi cambiare da solo.')}</li>
-              <li>{t('Quando inizia la lotta, si apre da sola nella scheda di Showdown.')}</li>
+              <li>{tj("Tocca il pulsante: Showdown si apre in un'altra scheda già con il nome {name} (niente Guest da rinominare).", {name: <b>{me.name}</b>})}</li>
+              <li>{t('Tienila aperta: quando inizia una lotta la trovi qui sotto e nel banner in alto.')}</li>
+              <li>{t('Con il comando a turno, quando tocca a te compaiono le mosse.')}</li>
             </ol>
           </div>
           {battles.length === 0 && <p className="muted">{t('Nessuna lotta in corso.')}</p>}
           {battles.map(b => (
-            <a key={b.roomid} className="panel battle-mini" href={`${showdownUrl()}/${b.roomid}`} target="showdown">
+            <a key={b.roomid} className="panel battle-mini" href={sdLink(b.roomid)} target="showdown">
               <strong>{b.title}</strong>
+              <span className="small muted">{t('Comanda: {name}', {name: b.players.p1})}</span>
               {b.active.p2 && <><span>{b.active.p2.name} LV {b.active.p2.level}</span><HpBar hp={b.active.p2.hp} /></>}
             </a>
           ))}

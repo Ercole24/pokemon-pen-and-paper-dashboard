@@ -5,7 +5,7 @@
 //   che la dashboard mostra al master e usa per la cattura.
 // Protocollo di Showdown: messaggi di testo; ">roomid" sulla prima riga indica la stanza, poi righe "|tipo|dati|...".
 import {EventEmitter} from 'node:events';
-import {fail} from './i18n.ts';
+import {fail, translate, type Lang} from './i18n.ts';
 
 /** Indirizzo del WebSocket di Showdown (in Docker: ws://showdown:8000/...), nome del bot e segreto. */
 const URL = process.env.SHOWDOWN_WS || 'ws://localhost:8000/showdown/websocket';
@@ -25,10 +25,16 @@ export type BattleState = {
   meta?: any,
   /** PS (in %), stato ed esausto di ogni Pokémon della squadra (p1) visto in campo, per nome; hpSaved = già salvati a fine lotta */
   p1mons: Record<string, {hp: number, status: string, fainted: boolean}>,
+  /** come p1mons, per l'avversario (serve allo zaino del Master) */
+  p2mons: Record<string, {hp: number, status: string, fainted: boolean}>,
   hpSaved?: boolean,
 };
 
-/** Eventi verso index.ts: 'status' (collegato/scollegato) e 'battle' (stato aggiornato), girati ai browser. */
+/**
+ * Eventi verso index.ts: 'status' (collegato/scollegato) e 'battle' (stato aggiornato), girati ai browser;
+ * zaino in lotta: 'bag' (la Squadra chiede l'elenco), 'baguse' (sceglie strumento e Pokémon), 'bagresult' (usato o rifiutato);
+ * 'turn' (nuovo turno: serve al comando a turno).
+ */
 export const events = new EventEmitter();
 /** Lotte conosciute, per roomid. */
 export const battles = new Map<string, BattleState>();
@@ -73,6 +79,8 @@ function onChunk(chunk: string) {
     else if (line.startsWith('|updateuser|') && line.includes(`${BOT_NAME}|1`)) { ready = true; events.emit('status', status()); }
     else if (line.startsWith('|pnpbattle|') || line.startsWith('|pnprenamed|')) pending.shift()?.resolve(line.slice(line.indexOf('|', 1) + 1));
     else if (line.startsWith('|pnperror|')) pending.shift()?.reject(pluginError(line.slice(10)));
+    else if (line.startsWith('|pnpbagreq|')) events.emit('bag', JSON.parse(line.slice(11)));
+    else if (line.startsWith('|pnpusereq|')) events.emit('baguse', JSON.parse(line.slice(11)));
     else if (line.startsWith('|pnpusers|')) usersWaiters.splice(0).forEach(r => r(JSON.parse(line.slice(10))));
     else if (roomid.startsWith('battle-') && (line.startsWith('|deinit') || line.startsWith('|noinit'))) markEnded(roomid);
     else if (roomid.startsWith('battle-')) onBattleLine(roomid, line);
@@ -114,13 +122,14 @@ function onBattleLine(roomid: string, line: string) {
   const side = (s: string) => s?.slice(0, 2) as 'p1' | 'p2';
   // "p1a: Pikachu" o "p1: Pikachu" (fuori dal campo, es. Campana Cura) -> stato salvato per quel nome
   const own = (ident: string, patch: Partial<{hp: number, status: string, fainted: boolean}>) => {
-    if (side(ident) !== 'p1') return;
+    const mons = side(ident) === 'p1' ? b.p1mons : side(ident) === 'p2' ? (b.p2mons ??= {}) : null;
+    if (!mons) return;
     const name = ident.replace(/^p\d[a-z]?: /, '');
-    b.p1mons[name] = {...(b.p1mons[name] || {hp: 100, status: '', fainted: false}), ...patch};
+    mons[name] = {...(mons[name] || {hp: 100, status: '', fainted: false}), ...patch};
   };
   switch (p[1]) {
   case 'player': if (p[3]) b.players[p[2] as 'p1' | 'p2'] = p[3]; break;
-  case 'turn': b.turn = +p[2]; break;
+  case 'turn': b.turn = +p[2]; events.emit('turn', b); break;
   case 'switch': case 'drag': case 'replace': {
     const s = side(p[2]);
     b.active[s] = {status: '', fainted: false, hp: 100, level: 100, species: '', ...parseMon(p[2], p[3], p[4])} as SideMon;
@@ -147,6 +156,8 @@ function onBattleLine(roomid: string, line: string) {
   }
   case 'win': b.ended = true; b.winner = p[2]; break;
   case 'tie': b.ended = true; break;
+  // esito di /pnpitem: «🎒 …» strumento usato, «🚫 …» rifiutato
+  case 'message': if (/^(🎒|🚫)/u.test(p[2] || '')) events.emit('bagresult', {roomid, ok: p[2].startsWith('🎒')}); break;
   case 'request': if (b.auto && p[2]) autoChoose(roomid, JSON.parse(p[2])); return;
   }
   if (/^\|(move|switch|-damage|-heal|faint|win|turn|-status|cant|-supereffective|-crit|-miss)\|/.test(line)) {
@@ -183,6 +194,23 @@ function request(line: string): Promise<string> {
   });
 }
 
+/** Zaino in lotta: mostra (o aggiorna) il riquadro html solo al giocatore che l'ha chiesto. */
+export function showBag(roomid: string, user: string, html: string) {
+  send('|/pnpbagshow ' + JSON.stringify({secret: SECRET, roomid, user, html}));
+}
+/** Testi dei messaggi in lotta per /pnpitem (il simulatore non conosce le lingue: arrivano già tradotti, {segnaposto} compresi). */
+const ITEM_TEXTS = ['si usa quando bisogna scegliere la mossa', 'in questo turno è già stato usato uno strumento', 'Pokémon non trovato',
+  '{name} è esausto', '{name} non è esausto', '{name} non è in campo', 'su {name} non avrebbe effetto', '{who} lancia {item}!', '{who} usa {item} su {name}!'];
+/** Zaino in lotta: il lato side usa lo strumento sul suo Pokémon n. idx (effetti in items.ts). */
+export function useItem(roomid: string, item: {side: 'p1' | 'p2', idx: number, label: string, who: string, effect: unknown, lang: Lang}) {
+  const {lang, ...rest} = item;
+  const txt = Object.fromEntries(ITEM_TEXTS.map(k => [k, translate(lang, k)]));
+  send('|/pnpitem ' + JSON.stringify({secret: SECRET, roomid, ...rest, txt}));
+}
+/** Lotta con comando a turno: da ora la Squadra (p1) la comanda l'utente user. */
+export function control(roomid: string, user: string, lang: Lang) {
+  send('|/pnpcontrol ' + JSON.stringify({secret: SECRET, roomid, user, msg: translate(lang, 'Ora comanda {name}')}));
+}
 /** Spegne Showdown (spegnimento automatico: vedi index.ts). */
 export function shutdown() {
   if (ready) send('|/pnpshutdown ' + JSON.stringify({secret: SECRET}));
@@ -215,7 +243,7 @@ export async function createBattle(opts: {format: string, p1: string, p2?: strin
   });
   battles.set(roomid, {
     roomid, title: opts.title, format: opts.format, auto, ended: false, turn: 0,
-    players: {p1: opts.p1, p2: opts.p2 || BOT_NAME}, active: {}, volatiles: {p2: []}, fainted: {p1: [], p2: []}, log: [], meta: opts.meta, p1mons: {},
+    players: {p1: opts.p1, p2: opts.p2 || BOT_NAME}, active: {}, volatiles: {p2: []}, fainted: {p1: [], p2: []}, log: [], meta: opts.meta, p1mons: {}, p2mons: {},
   });
   if (!auto) send(`|/join ${roomid}`); // il bot osserva per leggere PS e stato del selvatico
   return roomid;

@@ -11,8 +11,11 @@ import {useMap, useStore, type MapDoc, type MapSummary, type Tileset} from '../a
 import {useNpcImage} from './MapPlay';
 import {exportMap} from '../mapfiles';
 import {SpriteChooser} from '../components';
-import {t} from '../i18n';
+import {LANG, t} from '../i18n';
 import {addTilesetToMap, download, drawMap, exportTmj, floodFill, resizeMap, tilesetImage, ZONE_COLORS} from '../mapcore';
+import {FIELD} from '../../../server/src/field';
+/** Nome e mossa di un ostacolo da MN nella lingua scelta. */
+const fieldName = (f: {label: string, move: string, en: string[]}) => LANG === 'it' ? [f.label, f.move] : f.en;
 
 /** Strumenti disponibili. */
 type Tool = 'brush' | 'eraser' | 'fill' | 'rect' | 'picker' | 'select' | 'object';
@@ -99,6 +102,7 @@ function Editor({m, setM, tilesets, zones, maps, save, npcteam, gen}: {
   const [grid, setGrid] = useState(true);
   const [stamp, setStamp] = useState<Stamp>({w: 1, h: 1, gids: [0]});
   const [zoneValue, setZoneValue] = useState(1);
+  const [collValue, setCollValue] = useState(1); // 1 = muro, altri = caselle da MN (FIELD)
   const [paletteTs, setPaletteTs] = useState<string>(m.tilesets[0]?.id || tilesets[0]?.id || '');
   const [sel, setSel] = useState<Rect | null>(null);
   const [drag, setDrag] = useState<{start: {x: number, y: number}, cur: {x: number, y: number}} | null>(null);
@@ -199,7 +203,7 @@ function Editor({m, setM, tilesets, zones, maps, save, npcteam, gen}: {
   /** Valore da scrivere in una casella secondo strumento e livello: tile del timbro (ripetuto), 1 = collisione, zona scelta, 0 = gomma. */
   function valueFor(t: Tool, x: number, y: number) {
     if (t === 'eraser') return 0;
-    if (L.type === 'collision') return 1;
+    if (L.type === 'collision') return collValue;
     if (L.type === 'zone') return zoneValue;
     return stamp.gids[((y % stamp.h + stamp.h) % stamp.h) * stamp.w + ((x % stamp.w + stamp.w) % stamp.w)];
   }
@@ -414,7 +418,13 @@ function Editor({m, setM, tilesets, zones, maps, save, npcteam, gen}: {
           ) : L?.type === 'collision' ? (
             <div className="hint">
               <h3>{t('Collisioni')}</h3>
-              <p className="small">{t('Pennello = blocca (rosso), Gomma = libera. Servono a ricordare al tavolo dove non si passa.')}</p>
+              <p className="small">{t('Pennello = blocca, Gomma = libera. Al tavolo i giocatori non ci passano; acqua e cascate si attraversano con la MN nello zaino e la medaglia giusta. Alberi, massi e rocce: aggiungili come oggetti («Ostacolo da MN»).')}</p>
+              <div className="stack-xs">
+                {[{coll: 1, label: 'Muro', move: '', en: ['Wall', ''], color: '#dc2828'}, ...FIELD.filter(f => !f.object)].map(f => (
+                  <label key={f.coll} className="check"><input type="radio" name="coll" checked={collValue === f.coll} onChange={() => setCollValue(f.coll)} />
+                    <span style={{display: 'inline-block', width: 14, height: 14, borderRadius: 3, background: f.color}} /> {fieldName(f)[0]}{f.move && <span className="muted"> · {t('MN')} {fieldName(f)[1]}</span>}</label>
+                ))}
+              </div>
             </div>
           ) : L?.type === 'zone' ? (
             <div>
@@ -508,9 +518,13 @@ function ObjectPanel({obj, setObj, maps, npcteam, onDelete}: {obj?: MapDoc['obje
   return (
     <div className="stack">
       <h3>{t('Oggetto')} ({obj.x}, {obj.y})</h3>
-      <label>{t('Tipo')}<select value={obj.kind} onChange={e => setObj({kind: e.target.value})}>
+      <label>{t('Tipo')}<select value={obj.kind} onChange={e => setObj(e.target.value === 'obstacle' ? {kind: 'obstacle', field: 3, label: fieldName(FIELD[1])[0]} : {kind: e.target.value})}>
         <option value="npc">{t('PNG / Allenatore')}</option><option value="item">{t('Oggetto (Poké Ball)')}</option><option value="warp">{t('Porta / passaggio')}</option><option value="marker">{t('Segnaposto')}</option>
+        <option value="obstacle">{t('Ostacolo da MN (albero, masso, roccia)')}</option>
       </select></label>
+      {obj.kind === 'obstacle' && <label>{t('Ostacolo')}<select value={obj.field || 3} onChange={e => { const f = FIELD.find(x => x.coll === +e.target.value)!; setObj({field: f.coll, label: fieldName(f)[0]}); }}>
+        {FIELD.filter(f => f.object).map(f => <option key={f.coll} value={f.coll}>{f.icon} {fieldName(f)[0]} ({t('MN')} {fieldName(f)[1]})</option>)}
+      </select></label>}
       {obj.kind === 'npc' && <label>{t('Allenatore')}<select value={obj.npcTeam || ''} onChange={e => { const team = npcteam.find(x => x.id === e.target.value); setObj({npcTeam: e.target.value, label: team ? `${team.trainerClass ? t(team.trainerClass) : ''} ${team.name}`.trim() : obj.label}); }}>
         <option value="">— {t('scegli tra le Squadre PNG')} —</option>
         {npcteam.map(team => { const where = maps.find(m => m.objects?.some(o => o.id !== obj.id && o.kind === 'npc' && o.npcTeam === team.id)); return <option key={team.id} value={team.id} disabled={!!where}>{team.trainerClass ? t(team.trainerClass) : ''} {team.name}{where ? ` — ${t('già in {name}', {name: where.name})}` : team.defeated ? ` — ${t('sconfitto')}` : ''}</option>; })}

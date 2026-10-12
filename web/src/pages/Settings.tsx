@@ -43,7 +43,7 @@ export default function Settings() {
               {ADVENTURES.map(a => <option key={a.id} value={a.id}>{t(a.label)}</option>)}
             </select>
           </label>
-          <label>{t('Passi per turno sulla mappa (giocatori)')}<input type="number" min={1} max={20} value={c.moveRange ?? 4} onChange={e => set({moveRange: +e.target.value})} /></label>
+          <label>{t('Passi per turno sulla mappa (giocatori)')}<input type="number" min={1} max={20} value={c.moveRange ?? 8} onChange={e => set({moveRange: +e.target.value})} /></label>
         </div>
         <p className="small muted">{t('Cambiare generazione non modifica i Pokémon già creati: le specie non disponibili verranno segnalate.')}</p>
         {c.teamMode === 'own' && <p className="small muted">{t('Squadre personali: i Pokémon senza Allenatore compaiono a parte in “Squadra e PC”; assegnali dalla loro scheda (campo Allenatore).')}</p>}

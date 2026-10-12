@@ -1,17 +1,13 @@
 // Pagina Allenatori (/c/<id>/allenatori): schede dei giocatori come nel libretto.
 // Nome, giocatore, classe (con i modificatori alle 12 statistiche), sprite, medaglie, soldi, zaino, note.
 // TrainerSheet è usata anche nella vista giocatore.
-import {useEffect, useState} from 'react';
+import {useEffect, useRef, useState} from 'react';
 import {TYPES_IT, typeName, useStore, type Trainer} from '../api';
 import {LOCALE, t, tj} from '../i18n';
 import {BadgeCase, FudgeRoller, Modal, SpriteChooser, TrainerSprite, useBadges, useClasses} from '../components';
 import {CLASS_SPRITES, spriteForTrainer, trainerSpriteUrl} from '../trainers';
 import {STAT_GROUPS, ALL_STATS} from '../../../server/src/classes';
-
-/** Zaino salvato come testo («Poké Ball x5, Pozione x2»): elenco di [oggetto, quantità] e ritorno. */
-export const parseBag = (bag = '') => bag.split(/[,\n]/).map(x => x.trim()).filter(Boolean)
-  .map(x => { const m = x.match(/^(.*?)\s*[x×]\s*(\d+)$/i); return m ? [m[1], +m[2]] as [string, number] : [x, 1] as [string, number]; });
-export const formatBag = (items: [string, number][]) => items.filter(([, n]) => n > 0).map(([name, n]) => n > 1 ? `${name} x${n}` : name).join(', ');
+import {parseBag, formatBag} from '../../../server/src/items';
 
 /** Scheda vuota per un nuovo Allenatore. */
 const blank: Trainer = {name: '', className: 'Fantallenatore', gender: 'M', bag: '', notes: '', badges: [], money: 3000};
@@ -56,7 +52,23 @@ export function TrainerSheet({initial, onSaved, onDelete, playerMode}: {initial:
   const [test, setTest] = useState<string | null>(null);
   const [assist, setAssist] = useState(false);
   useEffect(() => { if (!dirty) setT(initial); }, [initial]);
-  const set = (p: Partial<Trainer>) => { setT({...tr, ...p}); setDirty(true); };
+  // campi cambiati e non ancora salvati: con la scheda già salvata si salvano da soli dopo una breve pausa,
+  // sopra l'ultima versione (soldi, zaino, medaglie e livelli cambiati altrove restano)
+  const patch = useRef<Partial<Trainer>>({});
+  const [saving, setSaving] = useState(false);
+  const set = (p: Partial<Trainer>) => { setT({...tr, ...p}); patch.current = {...patch.current, ...p}; setDirty(true); };
+  useEffect(() => {
+    if (!dirty || !tr.id || !tr.name.trim()) return;
+    const h = setTimeout(async () => {
+      const p = patch.current;
+      patch.current = {};
+      setSaving(true);
+      try { await save('trainer', {...initial, ...p}); } catch { patch.current = {...p, ...patch.current}; }
+      setSaving(false);
+      if (!Object.keys(patch.current).length) setDirty(false);
+    }, 800);
+    return () => clearTimeout(h);
+  }, [tr, dirty]);
   /** Soldi e zaino si salvano subito (anche dal telefono), partendo dall'ultima versione salvata. */
   const quick = async (p: Partial<Trainer>) => {
     if (!tr.id) return set(p);
@@ -83,6 +95,7 @@ export function TrainerSheet({initial, onSaved, onDelete, playerMode}: {initial:
   async function submit() {
     if (!tr.name.trim()) return alert(t('Serve un nome'));
     const saved = await save('trainer', tr);
+    patch.current = {};
     setT(saved); setDirty(false); onSaved?.(saved);
   }
 
@@ -202,7 +215,9 @@ export function TrainerSheet({initial, onSaved, onDelete, playerMode}: {initial:
 
       <div className="row gap-s end">
         {onDelete && <button className="btn-danger" onClick={() => confirm(t('Eliminare {name}?', {name: tr.name})) && onDelete()}>{t('Elimina')}</button>}
-        <button className="btn-primary" disabled={!dirty} onClick={submit}>{t(dirty ? 'Salva' : 'Salvato')}</button>
+        {tr.id
+          ? <span className="small muted" aria-live="polite">{t(dirty || saving ? 'Salvataggio…' : 'Salvato automaticamente')}</span>
+          : <button className="btn-primary" disabled={!dirty} onClick={submit}>{t('Salva')}</button>}
       </div>
 
       {test && (

@@ -91,7 +91,8 @@ export type MapDoc = {
   id?: string, name: string, layersRev?: number, width: number, height: number, tileSize: number, group?: string,
   tilesets: {id: string, firstgid: number}[], layers: MapLayer[],
   zoneRefs: string[], // indice (valore-1) nel livello zone -> id zona
-  objects: {id: string, x: number, y: number, kind: 'warp' | 'npc' | 'marker' | 'item', label: string, color?: string, toMap?: string, toX?: number, toY?: number,
+  // obstacle = albero/masso/roccia da MN (field = valore in FIELD, server/src/field.ts)
+  objects: {id: string, x: number, y: number, kind: 'warp' | 'npc' | 'marker' | 'item' | 'obstacle', label: string, color?: string, toMap?: string, toX?: number, toY?: number, field?: number,
     npcTeam?: string, item?: string, hidden?: boolean, sprite?: string, text?: string, gmText?: string}[], // text = cosa dice ai giocatori, gmText = note solo per il master
   // kind assente = Allenatore; pokemon/npc/trap = segnalini del master; hidden = solo il master lo vede (semitrasparente)
   tokens?: {id: string, x: number, y: number, label: string, color: string, kind?: 'pokemon' | 'npc' | 'trap', sprite?: string, hidden?: boolean}[],
@@ -212,6 +213,24 @@ export function useRolls() {
     return () => { socket.off('roll', on); };
   }, [campaign.id]);
   return list;
+}
+
+/** Stato del tavolo (server/src/index.ts): voto per una porta e turni sulla mappa, aggiornati in tempo reale. */
+export type Table = {
+  vote: {mapId: string, warpId: string, toMap: string, label: string, by: string, voters: string[], yes: string[], no: string[]} | null,
+  turns: {order: string[], current: number, seconds: number, endsAt?: number, start?: {x: number, y: number}} | null,
+};
+export function useTable() {
+  const {campaign} = useStore();
+  const [table, setTable] = useState<Table>({vote: null, turns: null});
+  useEffect(() => {
+    const load = () => api<Table>(`/c/${campaign.id}/table`).then(setTable).catch(() => {});
+    load();
+    socket.on('table', setTable);
+    socket.on('connect', load);
+    return () => { socket.off('table', setTable); socket.off('connect', load); };
+  }, [campaign.id]);
+  return table;
 }
 
 // --- dati Pokémon (cache per generazione) ---

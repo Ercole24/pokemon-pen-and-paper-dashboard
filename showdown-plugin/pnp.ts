@@ -72,6 +72,31 @@ export const commands: Chat.ChatCommands = {
 		battle.forfeit(player.id, ' ha terminato la lotta.');
 	},
 
+	/**
+	 * /pnpcontrol {"secret","roomid","user"}: lotta con «comando a turno» (squadra condivisa): da questo turno la Squadra (p1)
+	 * la comanda quell'utente (un altro giocatore collegato). Chi comandava prima perde i comandi, il nuovo li riceve subito.
+	 */
+	pnpcontrol(target, room, user, connection) {
+		let data: {secret: string, roomid: string, user: string, msg?: string};
+		try {
+			data = JSON.parse(target);
+		} catch {
+			return connection.send('|pnperror|JSON non valido');
+		}
+		if (!process.env.PNP_SECRET || data.secret !== process.env.PNP_SECRET) return connection.send('|pnperror|Segreto errato');
+		const battle = Rooms.get(data.roomid)?.battle;
+		const u = Users.get(data.user);
+		if (!battle || battle.ended || !battle.p1 || !u?.connected || u.id in battle.playerTable) return;
+		const old = Users.getExact(battle.p1.id);
+		battle.setPlayerUser(battle.p1, u);
+		old?.sendTo(battle.roomid, '|request|null');
+		if (!u.inRooms.has(battle.roomid)) u.joinRoom(battle.roomid);
+		battle.p1.active = true;
+		void battle.stream.write(`>player p1 ${JSON.stringify({name: u.name, avatar: u.avatar})}`);
+		battle.room.add(`|player|p1|${u.name}|${u.avatar}|`).add(`|raw|<div class="broadcast-blue">🎮 ${(data.msg || '{name}').replace(/[&<>"']/g, c => `&#${c.charCodeAt(0)};`).replace('{name}', `<b>${u.name.replace(/[&<>"']/g, c => `&#${c.charCodeAt(0)};`)}</b>`)}</div>`).update();
+		battle.onConnect(u);
+	},
+
 	/** /pnpusers: utenti collegati (anche i Guest), per scegliere chi gioca */
 	pnpusers(target, room, user, connection) {
 		const list = [...Users.users.values()]
@@ -111,6 +136,98 @@ export const commands: Chat.ChatCommands = {
 		}
 		if (!u.forceRename(name, false, true)) return connection.send(`|pnperror|Impossibile rinominare in {0}|${name}`);
 		connection.send(`|pnprenamed|${u.name}`);
+	},
+
+	/**
+	 * Zaino in lotta. Uno dei due giocatori (Squadra = p1, Master = p2) preme «Zaino» nei comandi della lotta (vedi client.mjs): /pnpbag;
+	 * sceglie strumento e Pokémon: /pnpuse <allenatore>|<strumento>|<n. del Pokémon nella squadra>.
+	 * I due comandi passano solo la richiesta al bot della dashboard, che conosce gli zaini (Allenatori per p1, Squadra PNG per p2):
+	 * risponde con /pnpbagshow (l'elenco, visibile solo a chi l'ha chiesto) o con /pnpitem (applica lo strumento, firmato col segreto).
+	 */
+	pnpbag(target, room, user) {
+		const battle = room?.battle;
+		if (!battle || battle.ended) return this.errorReply('The bag can only be used in an ongoing battle.');
+		const side = battle.p1?.id === user.id ? 'p1' : battle.p2?.id === user.id ? 'p2' : '';
+		if (!side) return this.errorReply('Only the two players of the battle can use the bag.');
+		Users.get(process.env.PNP_BOT || 'Arbitro')?.send(`|pnpbagreq|${JSON.stringify({roomid: room.roomid, user: user.id, side})}`);
+	},
+	pnpuse(target, room, user) {
+		const battle = room?.battle;
+		if (!battle || battle.ended) return this.errorReply('The bag can only be used in an ongoing battle.');
+		const side = battle.p1?.id === user.id ? 'p1' : battle.p2?.id === user.id ? 'p2' : '';
+		if (!side) return this.errorReply('Only the two players of the battle can use the bag.');
+		const [trainerId, item, idx] = target.split('|');
+		Users.get(process.env.PNP_BOT || 'Arbitro')?.send(`|pnpusereq|${JSON.stringify({roomid: room.roomid, user: user.id, side, trainerId, item, idx: +idx})}`);
+	},
+	/** /pnpbagshow {"secret","roomid","user","html"}: mostra (o aggiorna) il riquadro dello zaino solo a quel giocatore */
+	pnpbagshow(target, room, user, connection) {
+		let data: {secret: string, roomid: string, user: string, html: string};
+		try {
+			data = JSON.parse(target);
+		} catch {
+			return connection.send('|pnperror|JSON non valido');
+		}
+		if (!process.env.PNP_SECRET || data.secret !== process.env.PNP_SECRET) return connection.send('|pnperror|Segreto errato');
+		Users.get(data.user)?.sendTo(data.roomid as RoomID, `|uhtml|pnpbag|${data.html}`);
+	},
+	/**
+	 * /pnpitem {"secret","roomid","side","idx","label","who","effect"}: il lato side (p1/p2) usa uno strumento sul suo Pokémon n. idx
+	 * (effetti in server/src/items.ts). Come nei giochi l'uso occupa il turno: la scelta di quel lato diventa "passa".
+	 * Nel registro della lotta compare «🎒 … usa …» (o «🚫 …» se non avrebbe effetto): il bot lo legge per togliere lo strumento dallo zaino.
+	 * Poké Ball (effect.ball): mostra l'esito già calcolato dalla dashboard; se catturato vince la Squadra e la lotta finisce.
+	 */
+	pnpitem(target, room, user, connection) {
+		let data: {secret: string, roomid: string, side: 'p1' | 'p2', idx: number, label: string, who: string, effect: any, txt: Record<string, string>};
+		try {
+			data = JSON.parse(target);
+		} catch {
+			return connection.send('|pnperror|JSON non valido');
+		}
+		if (!process.env.PNP_SECRET || data.secret !== process.env.PNP_SECRET) return connection.send('|pnperror|Segreto errato');
+		const battle = Rooms.get(data.roomid)?.battle;
+		if (!battle || battle.ended) return;
+		const side = data.side === 'p2' ? 'p2' : 'p1', player = battle[side];
+		if (player) Users.get(player.id)?.sendTo(data.roomid as RoomID, '|uhtmlchange|pnpbag|');
+		const {idx, label, who, effect, txt} = data;
+		// codice eseguito nel simulatore (come per i PS in /pnpbattle: la riga ">>> codice" si toglie e la Promise non si risolve)
+		const code = `battle.log.pop(); (() => {
+			const d = ${JSON.stringify({idx, label, who, effect, txt})}, e = d.effect, s = ${side};
+			const T = (k, v) => (d.txt[k] || k).replace(/[{](\\w+)[}]/g, (m, x) => v && x in v ? v[x] : m);
+			const no = why => { battle.add('message', '🚫 ' + d.label + ': ' + why); battle.sendUpdates(); };
+			if (s.requestState !== 'move') return no(T('si usa quando bisogna scegliere la mossa'));
+			if (s.activeRequest && s.activeRequest.wait) return no(T('in questo turno è già stato usato uno strumento'));
+			const pass = () => {
+				s.clearChoice(); s.choice.actions.push({choice: 'pass'}); s.choice.cantUndo = true;
+				if (battle.allChoicesDone()) battle.commitChoices(); else s.emitRequest({wait: true, side: s.getRequestData()});
+			};
+			if (e.ball) {
+				// Poké Ball: l'esito l'ha già calcolato la dashboard (e.caught, e.text); se preso la lotta finisce qui
+				battle.add('message', '🎒 ' + T('{who} lancia {item}!', {who: d.who, item: d.label}));
+				battle.add('message', e.text);
+				if (e.caught) battle.win(s); else pass();
+				return battle.sendUpdates();
+			}
+			const t = s.pokemon.find(p => p.set === s.team[d.idx]);
+			if (!t) return no(T('Pokémon non trovato'));
+			if (e.revive ? !t.fainted : t.fainted) return no(T(t.fainted ? '{name} è esausto' : '{name} non è esausto', {name: t.name}));
+			if ((e.boost || e.volatile) && !t.isActive) return no(T('{name} non è in campo', {name: t.name}));
+			const heals = e.heal !== undefined && t.hp < t.maxhp, st = t.status;
+			const cures = !!(e.cure && st && (e.cure === 'all' || e.cure.includes(st)));
+			if (!e.revive && !heals && !cures && !e.boost && !e.volatile) return no(T('su {name} non avrebbe effetto', {name: t.name}));
+			battle.add('message', '🎒 ' + T('{who} usa {item} su {name}!', {who: d.who, item: d.label, name: t.name}));
+			if (e.revive) {
+				s.pokemonLeft++; t.fainted = false; t.faintQueued = false; t.subFainted = false; t.status = '';
+				t.hp = 1; t.sethp(Math.max(1, Math.floor(t.maxhp * e.revive)));
+				battle.add('-heal', t, t.getHealth, '[silent]');
+			}
+			if (heals) { t.sethp(e.heal ? Math.min(t.maxhp, t.hp + e.heal) : t.maxhp); battle.add('-heal', t, t.getHealth, '[silent]'); }
+			if (cures) t.cureStatus();
+			for (const [stat, n] of Object.entries(e.boost || {})) { const got = t.boostBy({[stat]: n}); if (got) battle.add('-boost', t, stat, got); }
+			if (e.volatile) t.addVolatile(e.volatile);
+			pass();
+			battle.sendUpdates();
+		})(); new Promise(() => {})`;
+		void battle.stream.write(`>eval ${code.replace(/\n/g, ' ')}`);
 	},
 
 	/**

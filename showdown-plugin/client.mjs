@@ -8,7 +8,9 @@
 // 2. dopo battledata.js: risorse e audio da play.pokemonshowdown.com;
 // 3. dopo client.js: niente login server (nomi liberi grazie a noguestsecurity), quindi
 //    nessun popup e "Choose name" rinomina direttamente con /trn; il nome resta finché la scheda è aperta;
-// 4. dopo client-mainmenu.js: niente news (le scaricherebbe da pokemonshowdown.com).
+//    con ?pnpname=Nome nell'indirizzo (link dalla pagina del giocatore) il nome è già quello;
+// 4. dopo client-mainmenu.js: niente news (le scaricherebbe da pokemonshowdown.com);
+// 5. dopo client-battle.js: pulsante «Zaino» (Bag) per usare gli strumenti in lotta.
 // Corregge anche i CSS in <cartella>/style (effetti fx/ da play.pokemonshowdown.com).
 // Uso: node client.mjs <index-old.html del build> <cartella servita>   (es. server/static di Showdown)
 import {mkdirSync, readFileSync, readdirSync, writeFileSync} from 'node:fs';
@@ -35,7 +37,7 @@ for (const css of readdirSync(`${dir}/style`).filter(f => f.endsWith('.css'))) {
 const after = (page, file, code) => {
   const re = new RegExp(`(<script src="[^"]*/${file}[^"]*"></script>)`);
   if (!re.test(page)) throw new Error(`${file} non trovato nella pagina di Showdown: il client è cambiato?`);
-  return page.replace(re, `$1\n${code}`);
+  return page.replace(re, m => `${m}\n${code}`); // funzione: niente sostituzioni «$» dentro il codice
 };
 
 let page = readFileSync(source, 'utf8')
@@ -57,6 +59,8 @@ page = after(page, 'js/battledata\\.js', '<script>' + [
   '};',
 ].join('\n') + '</script>');
 page = after(page, 'oldclient/client\\.js', '<script>' + [
+  // link dalla pagina del giocatore (…?pnpname=Nome): la scheda prende subito il nome del suo Allenatore, senza Guest da rinominare
+  'try { var pnpQ = new URLSearchParams(location.search).get("pnpname"); if (pnpQ) sessionStorage.setItem("pnpName", pnpQ.replace(/[|,;]+/g, "").slice(0, 18)); } catch (e) {}',
   // la modalità testclient sostituisce $.get/$.post con popup manuali: rimettiamo quelli normali
   '(function (get, post) { Storage.whenAppLoaded(function () { $.get = get; $.post = post; }); })($.get, $.post);',
   // nome tenuto per tutta la vita della scheda (sessionStorage): a ogni nuova connessione (ricarica, telefono che ha chiuso
@@ -77,6 +81,16 @@ page = after(page, 'oldclient/client\\.js', '<script>' + [
   '  return receive.apply(this, arguments);',
   '}; })(App.prototype.receive);',
   'User.prototype.rename = function (name) { app.send("/trn " + name.replace(/[|,;]+/g, "")); };',
+].join('\n') + '</script>');
+// Zaino: pulsante nei comandi della lotta, per i due giocatori (Squadra e Master) quando devono scegliere la mossa.
+// Manda /pnpbag (showdown-plugin/pnp.ts): l'elenco degli strumenti arriva nel registro della lotta, visibile solo a chi l'ha chiesto.
+page = after(page, 'oldclient/client-battle\\.js', '<script>' + [
+  '(function (update) { BattleRoom.prototype.updateMoveControls = function (type) {',
+  '  update.apply(this, arguments);',
+  '  if (type === "movetarget") return;',
+  '  this.$controls.find(".controls").append(\'<div class="pnpbag" style="clear:both;padding-top:6px"><button class="button" name="pnpBag">🎒 Bag</button></div>\');',
+  '}; })(BattleRoom.prototype.updateMoveControls);',
+  'BattleRoom.prototype.pnpBag = function () { this.send("/pnpbag"); };',
 ].join('\n') + '</script>');
 page = after(page, 'oldclient/client-mainmenu\\.js', '<script>MainMenuRoom.prototype.addNews = function () {};</script>');
 

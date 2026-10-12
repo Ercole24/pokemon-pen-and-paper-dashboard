@@ -184,6 +184,7 @@ label.check { flex-direction: row; align-items: center; gap: .55em; color: var(-
 .shiny { color: var(--yellow); display: inline-flex; }
 .types { display: flex; gap: .25rem; flex-wrap: wrap; }
 .type { font-size: .66rem; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; padding: .12em .5em; border-radius: 4px; color: #fff; background: var(--tc, #888); }
+.type-btn { border: 0; cursor: pointer; font-family: inherit; line-height: inherit; } .type-btn:hover { filter: brightness(1.15); } .type-btn:focus-visible { outline: 2px solid var(--gold); outline-offset: 1px; }
 .type-normal{--tc:#8a8a5c}.type-fire{--tc:#e0681f}.type-water{--tc:#4c7fe0}.type-electric{--tc:#c79c00}.type-grass{--tc:#4f9e36}.type-ice{--tc:#3fa7a7}
 .type-fighting{--tc:#b8281f}.type-poison{--tc:#94389a}.type-ground{--tc:#b08a2e}.type-flying{--tc:#7f6ad6}.type-psychic{--tc:#e0406f}.type-bug{--tc:#8a9a12}
 .type-rock{--tc:#9c8630}.type-ghost{--tc:#644f8c}.type-dragon{--tc:#5e2fe0}.type-dark{--tc:#5c4a3d}.type-steel{--tc:#7c7c96}.type-fairy{--tc:#cc6fcc}
@@ -340,6 +341,9 @@ details > summary { cursor: pointer; font-weight: 700; }
 .play-title { font: 13px/1.4 var(--pixel); margin: 0; flex: 1; }
 .mapview { position: relative; display: flex; flex-direction: column; flex: 1; min-height: 0; }
 .mapview-tools { padding: .45rem .8rem; background: var(--paper); border-bottom: 2px solid var(--line); }
+.table-bar { display: flex; flex-direction: column; gap: .4rem; padding: .4rem .8rem; background: var(--paper); border-bottom: 2px solid var(--line); }
+.table-bar:empty { display: none; }
+.turn-bar.my-turn b { color: var(--red, #d83a2c); }
 .mapview-canvas { flex: 1; overflow: auto; display: grid; place-items: center; background: var(--case); min-height: 320px; }
 .mapview-canvas canvas { image-rendering: pixelated; box-shadow: 0 0 0 3px #0b1226, 0 24px 48px -24px rgba(0, 0, 0, .8); }
 .popover { position: fixed; z-index: 40; background: var(--paper); border: 3px solid var(--line); border-radius: 12px; padding: .55rem; box-shadow: var(--lift); display: flex; flex-direction: column; gap: .35rem; transform: translate(-50%, 10px); animation: fade .15s; } /* niente "rise": il transform animato farebbe scorrere il menu sotto il puntatore */
@@ -481,6 +485,7 @@ button.badge-slot.got:hover img { transform: scale(1.08) rotate(-4deg); }
 .stat-bar { display: block; height: 10px; border-radius: 6px; background: linear-gradient(90deg, #3fae5b, #f2c230); transform-origin: left; border: 1.5px solid var(--line); }
 .move-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: .45rem; }
 .move-list li { display: flex; flex-wrap: wrap; align-items: center; gap: .45rem; padding: .45rem .6rem; border: 2px solid var(--line); border-radius: 9px; background: #fff; }
+.move-desc { flex-basis: 100%; color: var(--muted, #666); }
 .dialog-box { position: absolute; left: 12px; right: 12px; bottom: 12px; z-index: 20; background: var(--paper); border: 4px solid var(--line);
   border-radius: 10px; box-shadow: inset 0 0 0 3px var(--paper), inset 0 0 0 5px var(--line), var(--lift); padding: .9rem 1.1rem 1.1rem; display: flex; flex-direction: column; gap: .4rem; animation: rise .2s var(--ease); cursor: pointer; }
 .dialog-box strong { font: 10px/1.4 var(--pixel); text-transform: uppercase; color: var(--red); }

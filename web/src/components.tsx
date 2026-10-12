@@ -8,7 +8,8 @@ import {ChevronLeft, ChevronRight, Dices, Fish, GripVertical, Pickaxe, Sparkles,
 import {METHODS, methodOf} from '../../server/src/methods';
 import {api, cached, d, natureName, RollerCtx, socket, spriteUrl, STAT_NAMES, typeName, useCached, useRolls, useShareRoll, useSpecies, useStore, type Mon, type Roll, type SpeciesInfo, type Stats, type Trainer, type Zone} from './api';
 import {fudgeOutcome, rollFace, type Face} from '../../server/src/rules';
-import {LOCALE, t, tj} from './i18n';
+import {LOCALE, t, tj, LANG} from './i18n';
+import {evoCheck} from '../../server/src/items';
 import {badgesOf, badgeUrl, BASE_SPRITES, CLASS_SPRITES, NPC_CLASSES, resolveTrainerSprite, spriteForTrainer, trainerSpriteUrl} from './trainers';
 
 /** Sprite di una specie nello stile della generazione; se manca, ripiega sulla Gen 5. */
@@ -21,20 +22,62 @@ export function Sprite({species, shiny, size = 96}: {species: string, shiny?: bo
   return <img className="sprite" src={src} width={size} height={size} alt={species} loading="lazy" onError={() => setFallback(true)} />;
 }
 
-/** Etichetta colorata di un tipo, con il nome nella lingua scelta. */
-export function TypeBadge({type}: {type: string}) {
-  return <span className={`type type-${type.toLowerCase()}`}>{typeName(type)}</span>;
+/** Etichetta colorata di un tipo, con il nome nella lingua scelta. Con `info` è cliccabile e apre debolezze e resistenze del tipo. */
+export function TypeBadge({type, info}: {type: string, info?: boolean}) {
+  const [open, setOpen] = useState(false);
+  const cls = `type type-${type.toLowerCase()}`;
+  if (!info) return <span className={cls}>{typeName(type)}</span>;
+  return <>
+    <button type="button" className={`${cls} type-btn`} title={t('Debolezze e resistenze')} onClick={e => { e.stopPropagation(); setOpen(true); }}>{typeName(type)}</button>
+    {open && <TypeInfo type={type} onClose={() => setOpen(false)} />}
+  </>;
+}
+
+/** Finestra di un singolo tipo: come lo colpiscono gli altri tipi (difesa) e come colpisce lui (attacco). */
+function TypeInfo({type, onClose}: {type: string, onClose: () => void}) {
+  const {campaign} = useStore();
+  const data = useCached<{types: string[], chart: Record<string, Record<string, number>>}>(`/dex/${campaign.gen}/types`);
+  const group = (label: string, cls: string, mod: string, list: string[]) => (
+    <div key={label} className={`type-group ${cls}`}>
+      <div className="tg-head"><b>{t(label)}</b><span className="tg-mod">{mod}</span></div>
+      <div className="types">{list.length ? list.map(x => <TypeBadge key={x} type={x} />) : <span className="small muted">{t('nessuno')}</span>}</div>
+    </div>
+  );
+  const def = (m: number) => data?.types.filter(a => MULT[data.chart[type]?.[a]] === m) || [];
+  const atk = (m: number) => data?.types.filter(d => MULT[data.chart[d][type]] === m) || [];
+  return (
+    <div onClick={e => e.stopPropagation()}>
+      <Modal title={t('Tipo {name}', {name: typeName(type)})} onClose={onClose}>
+        {!data ? <p className="muted">{t('Caricamento…')}</p> : <div className="type-calc">
+          <h3>{t('In difesa (quando viene colpito)')}</h3>
+          <div className="type-groups">
+            {group('Debole a', 'weak2', 'x2', def(2))}
+            {group('Resiste a', 'res', 'x½', def(0.5))}
+            {group('Immune a', 'imm', 'x0', def(0))}
+          </div>
+          <h3>{t('In attacco (quando colpisce)')}</h3>
+          <div className="type-groups">
+            {group('Superefficace contro', 'res', 'x2', atk(2))}
+            {group('Poco efficace contro', 'weak2', 'x½', atk(0.5))}
+            {group('Nessun effetto su', 'weak4', 'x0', atk(0))}
+          </div>
+        </div>}
+      </Modal>
+    </div>
+  );
 }
 
 /** Finestra sopra la pagina, con titolo e chiusura (pulsante, clic fuori o tasto Esc). */
 export function Modal({title, onClose, children, wide}: {title: string, onClose: () => void, children: ReactNode, wide?: boolean}) {
+  const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    const k = (e: KeyboardEvent) => e.key === 'Escape' && onClose();
+    // con finestre una sopra l'altra, Esc chiude solo quella in cima
+    const k = (e: KeyboardEvent) => e.key === 'Escape' && [...document.querySelectorAll('.modal-backdrop')].at(-1) === ref.current && onClose();
     window.addEventListener('keydown', k);
     return () => window.removeEventListener('keydown', k);
   }, [onClose]);
   return (
-    <div className="modal-backdrop" onMouseDown={e => e.target === e.currentTarget && onClose()}>
+    <div ref={ref} className="modal-backdrop" onMouseDown={e => e.target === e.currentTarget && onClose()}>
       <div className={`modal ${wide ? 'modal-wide' : ''}`} role="dialog" aria-label={title}>
         <header className="modal-head"><h2>{title}</h2><button className="btn-icon" onClick={onClose} aria-label={t('Chiudi')}><X /></button></header>
         <div className="modal-body">{children}</div>
@@ -93,7 +136,7 @@ export function MonCard({mon, onClick, actions, compact}: {mon: Mon, onClick?: (
           {mon.shiny && <span className="shiny" title={t('Cromatico')}><Sparkles /></span>}
         </div>
         <div className="ln"><span>{mon.nickname ? mon.species : (mon.nature ? natureName(mon.nature, natures) : '')}</span><span className="lv">LV {mon.level}</span></div>
-        {!compact && <div className="types">{sp?.types.map(ty => <TypeBadge key={ty} type={ty} />)}</div>}
+        {!compact && <div className="types">{sp?.types.map(ty => <TypeBadge key={ty} type={ty} info />)}</div>}
         {!compact && mon.nickname && mon.nature && <div className="ln"><span>{natureName(mon.nature, natures)}</span></div>}
         {(mon.place === 'party' || mon.place === 'pc') && <MonHp mon={mon} sp={sp} />}
       </div>
@@ -197,20 +240,12 @@ export function MonEditor({initial, onSave, onDelete, onClose, title = 'Pokémon
             <button onClick={() => levelUp(1)}>+1 LV</button>
             <button onClick={() => levelUp(4)}>{t('+d4 man.')}</button>
           </div>
-          {lvlInfo && (lvlInfo.newMoves.length > 0 || lvlInfo.evolutions.some((e: any) => e.ready)) && (
+          {lvlInfo && lvlInfo.newMoves.length > 0 && (
             <div className="callout">
               {lvlInfo.newMoves.map((nm: any) => <div key={nm.move}>{tj('Può imparare {move} (LV {level})', {move: <b>{nm.move}</b>, level: nm.level})}</div>)}
-              {lvlInfo.evolutions.filter((e: any) => e.ready).map((e: any) => (
-                <div key={e.name}>{tj('Può evolversi in {name}!', {name: <b>{e.name}</b>})} <button className="btn-s" onClick={() => set({species: e.name})}>{t('Evolvi')}</button></div>
-              ))}
             </div>
           )}
-          {sp && sp.evos.length > 0 && (
-            <div className="muted small">{t('Evoluzioni')}: {sp.evos.map(e => {
-              const ev = species.get(e);
-              return `${e}${ev?.evoLevel ? ` (LV ${ev.evoLevel})` : ev?.evoItem ? ` (${ev.evoItem})` : ev?.evoType ? ` (${ev.evoType})` : ''}`;
-            }).join(', ')}</div>
-          )}
+          <Evolve mon={m} gm onDone={e => set({species: e.species, ability: e.ability})} />
         </div>
         <div className="mon-editor-main">
           <div className="grid-2">
@@ -259,13 +294,13 @@ export function MonEditor({initial, onSave, onDelete, onClose, title = 'Pokémon
               <input key={i} list="learnable" value={m.moves[i] || ''} placeholder={t('Mossa {n}', {n: i + 1})}
                 onChange={e => { const mv = [...m.moves]; mv[i] = e.target.value; set({moves: mv}); }} />
             ))}
-            <datalist id="learnable">{learn?.all.map(mv => <option key={mv} value={mv} />)}</datalist>
+            <datalist id="learnable">{learn?.all.map(mv => <option key={mv} value={mv}>{(mv)}</option>)}</datalist>
           </div>
           {learn && <details className="small"><summary>{t('Mosse per livello')}</summary>
             <div className="chips">{learn.levelUp.map(l => (
               <button key={l.move + l.level} className={`chip ${l.level <= m.level ? '' : 'chip-off'}`}
                 onClick={() => { if (!m.moves.includes(l.move)) { const mv = m.moves.filter(Boolean); mv.length >= 4 ? mv[3] = l.move : mv.push(l.move); set({moves: mv}); } }}>
-                {l.level} · {l.move}
+                {l.level} · {(l.move)}
               </button>
             ))}</div>
           </details>}
@@ -457,7 +492,7 @@ export function MonDetails({mon, onClose, actions}: {mon: Mon, onClose: () => vo
           <div className="stack">
             <div className="nm">{mon.nickname ? `${mon.nickname} · ${mon.species}` : mon.species} <span className={`gender g-${mon.gender}`}>{genderSym(mon.gender)}</span>{mon.shiny && <span className="shiny"><Sparkles /></span>}</div>
             <div><b>LV {mon.level}</b></div>
-            <div className="types">{sp?.types.map(t => <TypeBadge key={t} type={t} />)}</div>
+            <div className="types">{sp?.types.map(t => <TypeBadge key={t} type={t} info />)}</div>
             {gen >= 3 && <div className="small">{t('Natura')}: <b>{natureLabel(mon.nature, natures)}</b></div>}
             {gen >= 3 && mon.ability && <div className="small">{t('Abilità')}: <b>{mon.ability}</b></div>}
             {mon.item && <div className="small">{t('Strumento')}: <b>{mon.item}</b></div>}
@@ -485,6 +520,7 @@ export function MonDetails({mon, onClose, actions}: {mon: Mon, onClose: () => vo
           </table>
         )}
         {mon.id && mon.place !== 'npc' && <LevelUp mon={mon} />}
+        <Evolve mon={mon} />
         <h3>{t('Mosse')} {mon.id && mon.place !== 'npc' && <button className="btn-s" onClick={() => setPickMoves(p => !p)}>{pickMoves ? t('Fatto') : t('Cambia mosse')}</button>}</h3>
         {pickMoves && <MoveChooser mon={mon} />}
         <ul className="move-list">
@@ -537,8 +573,42 @@ function HpControls({mon, sp, onChange}: {mon: Mon, sp?: SpeciesInfo, onChange?:
 }
 
 /**
+ * Evoluzioni del Pokémon con i requisiti (evoCheck): pulsante «Evolvi» se li ha (livello, pietra nello zaino di un Allenatore),
+ * altrimenti cosa manca. Scambio e amicizia: il pulsante lo vede solo il Master (gm). Il server ricontrolla tutto.
+ */
+function Evolve({mon, gm, onDone}: {mon: Mon, gm?: boolean, onDone?: (m: Mon) => void}) {
+  const {campaign, trainer} = useStore();
+  const me = useContext(RollerCtx);
+  const species = useSpecies(campaign.gen);
+  const [err, setErr] = useState('');
+  const sp = species.get(mon.species);
+  if (!mon.id || mon.place === 'npc' || !sp?.evos.length) return null;
+  async function evolve(to: string) {
+    setErr('');
+    try { onDone?.(await api(`/c/${campaign.id}/evolve`, 'POST', {monId: mon.id, to, who: me.who, gm, level: mon.level})); } catch (e: any) { setErr(e.message); }
+  }
+  return (
+    <div className="stack-xs">
+      {sp.evos.map(name => {
+        const ev = species.get(name);
+        if (!ev) return null;
+        const chk = evoCheck(ev, mon.level, trainer.map(x => x.bag || ''), LANG);
+        return (
+          <div key={name} className="row gap-s wrap small">
+            {chk.ok || (gm && chk.gmOnly)
+              ? <button className="btn-primary btn-s" onClick={() => confirm(t('Evolvere {mon} in {name}?', {mon: mon.nickname || mon.species, name})) && evolve(name)}><Sparkles /> {t('Evolvi in {name}', {name})}</button>
+              : <span className="muted">{tj('Evoluzione: {name} ({why})', {name: <b>{name}</b>, why: chk.why})}</span>}
+          </div>
+        );
+      })}
+      {err && <p className="error small">{err}</p>}
+    </div>
+  );
+}
+
+/**
  * +1 livello dalla scorta data dal Master (il server controlla che ne resti uno: mai più livelli spesi che dati).
- * Dopo la salita mostra le mosse nuove e se può evolversi (l'evoluzione la decide il Master).
+ * Dopo la salita mostra le mosse nuove (il pulsante per evolversi è in Evolve).
  */
 function LevelUp({mon}: {mon: Mon}) {
   const {campaign, trainer} = useStore();
@@ -559,7 +629,6 @@ function LevelUp({mon}: {mon: Mon}) {
         <button className="btn-primary btn-s" disabled={left <= 0 || mon.level >= 100} onClick={up}>+1 LV</button>
       </div>
       {info?.newMoves.map(nm => <div key={nm.move} className="small">{tj('Può imparare {move}: usa «Cambia mosse».', {move: <b>{nm.move}</b>})}</div>)}
-      {info?.evolutions.filter(e => e.ready).map(e => <div key={e.name} className="small">{tj('Può evolversi in {name}! Dillo al Master.', {name: <b>{e.name}</b>})}</div>)}
       {err && <p className="error small">{err}</p>}
     </div>
   );

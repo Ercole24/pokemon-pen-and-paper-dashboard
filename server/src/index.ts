@@ -18,6 +18,8 @@ import {CLASSES} from './classes.ts';
 import {methodLabel, methodOf} from './methods.ts';
 import {fail, translate, type Lang} from './i18n.ts';
 import {trusted} from './trusted.ts';
+import {evoCheck, formatBag, isItem, itemEffect, parseBag} from './items.ts';
+import {majority, reachable} from './field.ts';
 
 /**
  * Porta (3000 di default), server Fastify (limite 60 MB: le mappe caricate a mano viaggiano come immagini dentro il JSON)
@@ -177,6 +179,37 @@ app.post('/api/c/:cid/levelup', async req => {
   return dex.levelUpInfo(c.gen, mon.species, mon.level, mon.level + 1);
 });
 
+/**
+ * Evoluzione (giocatori e Master): solo se ha i requisiti (evoCheck in items.ts). Una pietra si toglie dallo zaino
+ * dell'Allenatore che la possiede (prima il proprietario del Pokémon); scambio e amicizia può deciderli solo il Master (gm).
+ * L'abilità resta nello stesso slot (prima, seconda o nascosta).
+ */
+app.post('/api/c/:cid/evolve', async req => {
+  const {cid} = req.params as any;
+  // level: il Master può aver alzato il livello nell'editor senza ancora salvare
+  const {monId, to, who, gm, level} = req.body as {monId: string, to: string, who?: string, gm?: boolean, level?: number};
+  const c = campaign(cid);
+  const mon = db.get(monId);
+  const sp = mon && dex.species(c.gen, mon.species), ev = dex.species(c.gen, to);
+  if (!mon || !sp || !ev || !sp.evos.includes(ev.name)) throw fail(400, 'Evoluzione non valida');
+  const lang = langOf(req), tr = (s: string, vars?: Record<string, unknown>) => translate(lang, s, vars);
+  const trainers = db.list(cid, 'trainer').sort((a, b) => +(b.id === mon.owner) - +(a.id === mon.owner));
+  const chk = evoCheck(ev, gm && level ? level : mon.level, trainers.map(t => t.bag || ''), lang);
+  if (!chk.ok && !(gm && chk.gmOnly)) throw fail(400, 'Non può ancora evolversi in {name}: {why}', {name: ev.name, why: chk.why});
+  let used = '';
+  if (chk.item) {
+    const t = trainers.find(x => parseBag(x.bag).some(([name, n]) => n > 0 && isItem(name, chk.item!)))!;
+    const items = parseBag(t.bag), i = items.findIndex(([name, n]) => n > 0 && isItem(name, chk.item!));
+    used = tr(' usando {item} di {trainer}', {item: items[i][0], trainer: t.name});
+    save(cid, 'trainer', {...t, bag: formatBag(items.map((it, j) => j === i ? [it[0], it[1] - 1] : it))});
+  }
+  const slot = Object.keys(sp.abilities).find(k => (sp.abilities as any)[k] === mon.ability) || '0';
+  const ability = (ev.abilities as any)[slot] || ev.abilities[0];
+  const saved = save(cid, 'mon', {...mon, species: ev.name, ability});
+  log(cid, tr('{who}: {name} si evolve in {to}{used}!', {who: who || tr(gm ? 'Il Master' : 'Un giocatore'), name: mon.nickname || mon.species, to: ev.name, used}), 'catch');
+  return saved;
+});
+
 // --- dati Pokémon ---
 /** Pokédex della generazione. */
 app.get('/api/dex/:gen/species', async req => dex.speciesList(+(req.params as any).gen));
@@ -248,7 +281,7 @@ app.post('/api/showdown/rename', async req => {
 app.post('/api/c/:cid/battle', async req => {
   const {cid} = req.params as any;
   const c = campaign(cid);
-  const body = req.body as {playerMonIds: string[], opponent: dex.Mon[], kind: 'wild' | 'trainer', title?: string, gmControls?: boolean, teamUser?: string, gmUser?: string};
+  const body = req.body as {playerMonIds: string[], opponent: dex.Mon[], kind: 'wild' | 'trainer', title?: string, gmControls?: boolean, teamUser?: string, gmUser?: string, npcTeamId?: string, rotate?: boolean};
   const chosen = body.playerMonIds.map(id => db.get(id)).filter(Boolean) as any[];
   if (!chosen.length) throw fail(400, 'Scegli almeno un Pokémon della squadra');
   // i Pokémon KO restano fuori: non si riprendono da soli tra una lotta e l'altra
@@ -262,7 +295,9 @@ app.post('/api/c/:cid/battle', async req => {
     format: dex.formatId(c.gen), p1: body.teamUser || c.teamUser, p2: body.gmControls ? (body.gmUser || c.gmUser) : undefined,
     team1: dex.packTeam(mine), team2: dex.packTeam(body.opponent), title,
     hp1: mine.map(m => ({hp: m.hp ?? null, status: m.status || ''})), // PS e stato rimasti dalla lotta precedente
-    meta: {cid, kind: body.kind, opponent: body.opponent, playerMonIds: mine.map(m => m.id), lang: langOf(req)},
+    meta: {cid, kind: body.kind, opponent: body.opponent, playerMonIds: mine.map(m => m.id), lang: langOf(req), npcTeamId: body.kind === 'trainer' ? body.npcTeamId : undefined,
+      // comando a turno: a ogni turno la Squadra passa al prossimo Allenatore collegato a Showdown (col suo nome)
+      rotate: body.rotate ? db.list(cid, 'trainer').map(t => t.name) : undefined},
   });
   log(cid, tr('Lotta iniziata: {title}', {title}), 'battle');
   return {roomid};
@@ -284,10 +319,15 @@ app.post('/api/battle/:roomid/end', async req => {
  * Se riesce, il Pokémon va in squadra (o nel PC se la squadra è piena: con squadre personali, quella di chi l'ha catturato)
  * e si scrive nel diario.
  */
+type CatchBody = {wild: dex.Mon, input: CatchInput, roll: number, trainerId?: string, roomid?: string, hardCatch?: boolean, nickname?: string};
 app.post('/api/c/:cid/catch', async req => {
   const {cid} = req.params as any;
+  const body = req.body as CatchBody;
+  return catchApply(cid, body, catchCalc(cid, body), langOf(req));
+});
+/** Esito di un tentativo di cattura (senza salvare nulla): tabella del libretto con il bonus della Classe. */
+function catchCalc(cid: string, body: CatchBody) {
   const c = campaign(cid);
-  const body = req.body as {wild: dex.Mon, input: CatchInput, roll: number, trainerId?: string, roomid?: string, hardCatch?: boolean, nickname?: string};
   const sp = dex.species(c.gen, body.wild.species);
   const trainer = body.trainerId ? db.get(body.trainerId) : undefined;
   const cls = trainer && (trainer.className === 'Personalizzata' ? trainer.customClass : CLASSES.find(k => k.name === trainer.className));
@@ -296,10 +336,13 @@ app.post('/api/c/:cid/catch', async req => {
     typeBonus: classTypeBonus(cls?.catchBonus, sp?.types || []),
     hardCatch: body.hardCatch ?? (!!sp && (sp.finalEvo || sp.legendary)),
   };
-  const res = catchResult(body.roll, input);
-  // il diario si scrive nella lingua di chi ha lanciato la Poké Ball
-  const tr = (s: string, vars?: Record<string, unknown>) => translate(langOf(req), s, vars);
-  const who = trainer?.name || tr('La squadra');
+  return catchResult(body.roll, input);
+}
+/** Cattura riuscita: il Pokémon va in squadra o nel PC; in ogni caso una riga nel diario (nella lingua di chi ha lanciato la Poké Ball). */
+function catchApply(cid: string, body: CatchBody, res: ReturnType<typeof catchResult>, lang: Lang) {
+  const c = campaign(cid);
+  const tr = (s: string, vars?: Record<string, unknown>) => translate(lang, s, vars);
+  const who = (body.trainerId && db.get(body.trainerId)?.name) || tr('La squadra');
   if (res.caught) {
     // squadre personali (teamMode 'own'): conta solo la squadra di chi ha lanciato la Poké Ball
     const party = db.list(cid, 'mon').filter(m => m.place === 'party' && (c.teamMode !== 'own' || (m.owner || '') === (body.trainerId || '')));
@@ -310,7 +353,119 @@ app.post('/api/c/:cid/catch', async req => {
   }
   log(cid, tr('{who} non riesce a catturare {species}: {roll} + {bonus} = {total} (serve {need})', {who, species: body.wild.species, roll: res.roll, bonus: res.bonus, total: res.total, need: res.threshold}), 'catch');
   return res;
+}
+
+// --- tavolo: voto per le porte e turni sulla mappa attiva (in memoria: un riavvio del server li azzera) ---
+/** Voto per passare da una porta: votanti = Allenatori con il segnalino sulla mappa attiva quando parte. */
+type Vote = {mapId: string, warpId: string, toMap: string, label: string, by: string, voters: string[], yes: string[], no: string[]};
+/** Turni a rotazione: ordine degli Allenatori, di chi è il turno, da dove è partito (i passi si contano da lì), scadenza. */
+type Turns = {order: string[], current: number, seconds: number, endsAt?: number, start?: {x: number, y: number}};
+const votes = new Map<string, Vote>(), turns = new Map<string, Turns>(), turnTimers = new Map<string, NodeJS.Timeout>();
+const table = (cid: string) => ({vote: votes.get(cid) || null, turns: turns.get(cid) || null});
+const emitTable = (cid: string) => io.to(cid).emit('table', table(cid));
+/** Mappa attiva e Allenatori che ci hanno il segnalino, nell'ordine in cui sono stati creati. */
+function tableMap(cid: string) {
+  const c = campaign(cid), map = c.activeMap && db.get(c.activeMap);
+  if (!map) throw fail(400, 'Nessuna mappa al tavolo');
+  const ids = new Set((map.tokens || []).filter((t: any) => !t.kind).map((t: any) => t.id));
+  return {c, map, trainers: db.list(cid, 'trainer').filter(t => ids.has(t.id)).map(t => t.id as string)};
+}
+/**
+ * Il gruppo passa dalla porta: la mappa d'arrivo diventa quella attiva e i segnalini degli Allenatori ci si spostano,
+ * sulla casella d'arrivo della porta e quelle libere più vicine (senza casella d'arrivo li mette il Master).
+ */
+function passWarp(cid: string, v: Vote, lang: Lang) {
+  const c = campaign(cid), from = db.get(v.mapId), to = db.get(v.toMap);
+  votes.delete(cid);
+  if (!from || !to) return emitTable(cid);
+  const warp = from.objects.find((o: any) => o.id === v.warpId);
+  const moving = (from.tokens || []).filter((t: any) => !t.kind);
+  if (warp?.toX !== undefined && warp?.toY !== undefined) {
+    const dest = {x: warp.toX, y: warp.toY};
+    const others = new Set<string>((to.tokens || []).filter((t: any) => !moving.some((m: any) => m.id === t.id)).map((t: any) => `${t.x},${t.y}`));
+    const spots = [`${dest.x},${dest.y}`, ...reachable(to as any, dest, 6, others)].filter(k => !others.has(k));
+    const placed = moving.map((t: any, i: number) => { const [x, y] = (spots[i] || spots[0]).split(',').map(Number); return {...t, x, y}; });
+    save(cid, 'map', {...to, tokens: (to.tokens || []).filter((t: any) => !moving.some((m: any) => m.id === t.id)).concat(placed)});
+    save(cid, 'map', {...db.get(v.mapId), tokens: (from.tokens || []).filter((t: any) => t.kind)});
+  }
+  io.emit('campaign', db.put('_', 'campaign', {...c, activeMap: v.toMap}));
+  log(cid, translate(lang, 'Il gruppo entra in {map} ({door}).', {map: to.name, door: v.label}), 'info');
+  const t = turns.get(cid);
+  if (t) startTurn(cid, t.current); else emitTable(cid);
+}
+/** Voto: start (proporre, vicino alla porta), yes/no, cancel e force (Master). */
+app.post('/api/c/:cid/vote', async req => {
+  const {cid} = req.params as any;
+  const {action, trainerId, warpId} = req.body as {action: string, trainerId?: string, warpId?: string};
+  const v = votes.get(cid);
+  if (action === 'start') {
+    if (v) throw fail(400, 'C\'è già un voto in corso');
+    const {map, trainers} = tableMap(cid);
+    const me = (map.tokens || []).find((t: any) => t.id === trainerId && !t.kind);
+    const warp = map.objects.find((o: any) => o.id === warpId && o.kind === 'warp' && o.toMap);
+    if (!me || !warp) throw fail(400, 'Porta o Allenatore non trovati');
+    if (Math.abs(me.x - warp.x) + Math.abs(me.y - warp.y) > 1) throw fail(400, 'Avvicinati alla porta');
+    const to = db.get(warp.toMap);
+    const nv: Vote = {mapId: map.id, warpId: warp.id, toMap: warp.toMap, label: warp.label || to?.name || translate(langOf(req), 'Porta'), by: trainerId!, voters: trainers, yes: [trainerId!], no: []};
+    votes.set(cid, nv);
+    if (majority(nv.yes.length, nv.voters.length)) return passWarp(cid, nv, langOf(req)), table(cid);
+  } else if (action === 'yes' || action === 'no') {
+    if (!v) throw fail(400, 'Nessun voto in corso');
+    if (!v.voters.includes(trainerId!)) throw fail(400, 'Non sei sulla mappa: non voti');
+    v.yes = v.yes.filter(x => x !== trainerId); v.no = v.no.filter(x => x !== trainerId);
+    (action === 'yes' ? v.yes : v.no).push(trainerId!);
+    if (majority(v.yes.length, v.voters.length)) return passWarp(cid, v, langOf(req)), table(cid);
+    // la maggioranza non è più raggiungibile: voto chiuso
+    if (!majority(v.voters.length - v.no.length, v.voters.length)) { votes.delete(cid); log(cid, translate(langOf(req), 'Il gruppo decide di non entrare in {door}.', {door: v.label})); }
+  } else if (action === 'cancel') votes.delete(cid);
+  else if (action === 'force' && v) return passWarp(cid, v, langOf(req)), table(cid);
+  emitTable(cid);
+  return table(cid);
 });
+
+/** Inizia il turno n. i (con il punto di partenza del segnalino) e il timer che passa al prossimo. */
+function startTurn(cid: string, i: number) {
+  const t = turns.get(cid);
+  clearTimeout(turnTimers.get(cid));
+  if (!t) return emitTable(cid);
+  try { t.order = tableMap(cid).trainers.length ? tableMap(cid).trainers : t.order; } catch {}
+  t.current = t.order.length ? (i + t.order.length) % t.order.length : 0;
+  const map = db.get(campaign(cid).activeMap);
+  const tok = (map?.tokens || []).find((k: any) => k.id === t.order[t.current]);
+  t.start = tok && {x: tok.x, y: tok.y};
+  t.endsAt = t.seconds ? Date.now() + t.seconds * 1000 : undefined;
+  // campagna eliminata nel frattempo: i turni si fermano
+  if (t.seconds) turnTimers.set(cid, setTimeout(() => { try { nextTurn(cid); } catch { turns.delete(cid); } }, t.seconds * 1000));
+  emitTable(cid);
+}
+/** Passa al prossimo Allenatore (l'ordine si rilegge: chi è stato tolto o aggiunto alla mappa esce o entra). */
+function nextTurn(cid: string) {
+  const t = turns.get(cid);
+  if (!t) return;
+  const prev = t.order[t.current];
+  try { t.order = tableMap(cid).trainers; } catch {}
+  const i = t.order.indexOf(prev);
+  startTurn(cid, i < 0 ? t.current : i + 1);
+}
+/** Turni: on (Master, seconds = durata, 0 = senza timer), off, next (il Master o chi è di turno). */
+app.post('/api/c/:cid/turns', async req => {
+  const {cid} = req.params as any;
+  const {action, seconds, trainerId, gm} = req.body as {action: string, seconds?: number, trainerId?: string, gm?: boolean};
+  if (action === 'on') {
+    const {trainers} = tableMap(cid);
+    if (!trainers.length) throw fail(400, 'Nessun Allenatore sulla mappa');
+    turns.set(cid, {order: trainers, current: 0, seconds: Math.max(0, Math.min(3600, +(seconds || 0)))});
+    startTurn(cid, 0);
+  } else if (action === 'off') { turns.delete(cid); clearTimeout(turnTimers.get(cid)); emitTable(cid); }
+  else if (action === 'next') {
+    const t = turns.get(cid);
+    if (!t) throw fail(400, 'I turni non sono attivi');
+    if (!gm && t.order[t.current] !== trainerId) throw fail(400, 'Non è il tuo turno');
+    nextTurn(cid);
+  }
+  return table(cid);
+});
+app.get('/api/c/:cid/table', async req => table((req.params as any).cid));
 
 // --- tempo reale ---
 /** Ultimi tiri di dado per campagna (dal più recente). */
@@ -371,6 +526,84 @@ function checkMasters() {
 /** Stato di Showdown e delle lotte inoltrato a tutti i browser. */
 sd.events.on('status', s => io.emit('status', s));
 sd.events.on('battle', b => { io.emit('battle', b); if (b.ended && !b.hpSaved && b.meta?.cid) saveBattleHp(b); });
+// --- zaino in lotta (vedi /pnpbag in showdown-plugin/pnp.ts): la Squadra (p1) usa gli strumenti degli Allenatori della campagna,
+// il Master (p2) quelli della Squadra PNG avversaria (campo bag, come lo zaino degli Allenatori); i selvatici non hanno zaino ---
+const escHtml = (s: string) => s.replace(/[&<>"']/g, c => `&#${c.charCodeAt(0)};`);
+type Side = 'p1' | 'p2';
+/** Chi ha lo zaino per quel lato: documenti (Allenatori o Squadra PNG) e Pokémon in lotta, nell'ordine della squadra di Showdown. */
+function bagOwners(b: sd.BattleState, side: Side) {
+  if (side === 'p1') {
+    return {kind: 'trainer', owners: db.list(b.meta.cid, 'trainer'), mons: (b.meta.playerMonIds as string[]).map(id => db.get(id)), seen: b.p1mons};
+  }
+  const team = b.meta.npcTeamId && db.list(b.meta.cid, 'npcteam').find(t => t.id === b.meta.npcTeamId);
+  return {kind: 'npcteam', owners: team ? [team] : [], mons: (b.meta.opponent || []) as any[], seen: b.p2mons || {}};
+}
+/** Comando a turno: al turno n comanda l'n-esimo Allenatore collegato (nell'ordine della campagna). */
+sd.events.on('turn', async (b: sd.BattleState) => {
+  if (!b.meta?.rotate?.length || b.ended) return;
+  const online = new Map((await sd.onlineUsers()).map(u => [u.id, u]));
+  const names = (b.meta.rotate as string[]).filter(n => online.has(n.toLowerCase().replace(/[^a-z0-9]/g, '')));
+  if (names.length) sd.control(b.roomid, names[(b.turn - 1) % names.length], b.meta.lang || 'en');
+});
+/** Strumenti scelti e in attesa dell'esito dal simulatore, per lotta (in ordine): tolti dallo zaino solo se usati davvero. */
+type Pending = {cid: string, kind: string, ownerId: string, item: string, lang: Lang, caught?: {body: CatchBody, res: ReturnType<typeof catchResult>}};
+const bagPending = new Map<string, Pending[]>();
+sd.events.on('bag', ({roomid, user, side}: {roomid: string, user: string, side: Side}) => {
+  const b = sd.battles.get(roomid);
+  if (!b?.meta?.cid || b.ended) return;
+  const {owners, mons, seen} = bagOwners(b, side);
+  const wild = side === 'p1' && b.meta.kind === 'wild';
+  const tr = (s: string, vars?: Record<string, unknown>) => escHtml(translate(b.meta.lang || 'en', s, vars));
+  const rows = owners.flatMap(t => parseBag(t.bag).filter(([name, n]) => n > 0 && itemEffect(name) && (!itemEffect(name)!.ball || wild)).map(([name, n]) => {
+    const e = itemEffect(name)!;
+    if (e.ball) return `<div style="margin:4px 0"><b>${escHtml(name)}</b> x${n} <small>(${escHtml(t.name)})</small><br /><button class="button" name="send" value="${escHtml(`/pnpuse ${t.id}|${name}|0`)}">${tr('Lancia contro {name}', {name: b.active.p2?.species || '?'})}</button></div>`;
+    const targets = mons.map((m, i) => {
+      if (!m) return '';
+      const label = m.nickname || m.species, st = seen[label];
+      if (!!e.revive !== !!st?.fainted) return ''; // i Revitalizzanti solo sui KO, il resto solo su chi è in piedi
+      const info = st ? (st.fainted ? 'KO' : `${st.hp}%${st.status ? ' ' + st.status : ''}`) : '';
+      return `<button class="button" name="send" value="${escHtml(`/pnpuse ${t.id}|${name}|${i}`)}">${escHtml(label)}${info ? ` <small>${escHtml(info)}</small>` : ''}</button> `;
+    }).join('');
+    return targets ? `<div style="margin:4px 0"><b>${escHtml(name)}</b> x${n} <small>(${escHtml(t.name)})</small><br />${targets}</div>` : '';
+  })).filter(Boolean);
+  sd.showBag(roomid, user, `<div class="infobox"><strong>🎒 ${tr('Zaino')}</strong> <small>${tr('tocca il Pokémon su cui usarlo: usare uno strumento occupa il turno')}</small>` +
+    (rows.length ? rows.join('') : `<p>${tr(side === 'p2' && !owners.length ? 'Nessuno strumento usabile in lotta (i selvatici non hanno zaino).' : 'Nessuno strumento usabile in lotta.')}</p>`) + '</div>');
+});
+sd.events.on('baguse', ({roomid, side, trainerId, item, idx}: {roomid: string, side: Side, trainerId: string, item: string, idx: number}) => {
+  const b = sd.battles.get(roomid);
+  if (!b?.meta?.cid || b.ended) return;
+  const {kind, owners, mons} = bagOwners(b, side);
+  const t = owners.find(x => x.id === trainerId);
+  const effect = itemEffect(item), have = t && parseBag(t.bag).find(([name, n]) => name === item && n > 0);
+  if (!t || !effect || !have || !mons[idx]) return;
+  let caught: Pending['caught'];
+  if (effect.ball) {
+    // Poké Ball: tiro d100 e tabella del libretto qui; il simulatore mostra l'esito e, se preso, chiude la lotta
+    const wild = (b.meta.opponent || [])[0], foe = b.active.p2;
+    if (side !== 'p1' || b.meta.kind !== 'wild' || !wild || !foe || foe.fainted) return;
+    const body: CatchBody = {wild, trainerId: t.id, roll: 1 + Math.floor(Math.random() * 100), input: {
+      ball: effect.ball, hpPercent: foe.hp, status: foe.status || undefined, wildLevel: wild.level, ownLevel: b.active.p1?.level,
+      confused: b.volatiles.p2.includes('confusion'), infatuated: b.volatiles.p2.includes('Attract'),
+    }};
+    const res = catchCalc(b.meta.cid, body);
+    caught = {body, res};
+    effect.caught = res.caught;
+    const vars = {species: wild.species, roll: res.roll, bonus: res.bonus, total: res.total, need: res.threshold};
+    effect.text = translate(b.meta.lang || 'en', res.caught ? '✨ {species} è stato catturato! ({roll} + {bonus} = {total})'
+      : '{species} si è liberato! ({roll} + {bonus} = {total}, serviva {need})', vars);
+  }
+  bagPending.set(roomid, [...(bagPending.get(roomid) || []), {cid: b.meta.cid, kind, ownerId: t.id, item, lang: b.meta.lang || 'en', caught}]);
+  sd.useItem(roomid, {side, idx, label: item, who: t.name, effect, lang: b.meta.lang || 'en'});
+});
+sd.events.on('bagresult', ({roomid, ok}: {roomid: string, ok: boolean}) => {
+  const p = bagPending.get(roomid)?.shift();
+  const t = p && db.list(p.cid, p.kind).find(x => x.id === p.ownerId);
+  if (!ok || !p || !t) return;
+  save(p.cid, p.kind, {...t, bag: formatBag(parseBag(t.bag).map(([name, n]) => [name, name === p.item ? n - 1 : n]))});
+  if (p.caught) catchApply(p.cid, p.caught.body, p.caught.res, p.lang);
+  else log(p.cid, translate(p.lang, '{who} usa {item} in lotta.', {who: t.name, item: p.item}), 'battle');
+});
+
 /**
  * Fine lotta: PS e stato dei Pokémon della squadra restano com'erano (KO compresi), così la lotta dopo riparte da lì.
  * Il bot vede i PS in percentuale (è spettatore): si riconvertono in PS veri, con al massimo 1 PS di arrotondamento.

@@ -4,15 +4,16 @@
 // - MapView è usata anche dal telefono (pagina Player) con gm=false: visuale limitata attorno al proprio Allenatore,
 //   movimento solo verso le caselle raggiungibili.
 // I segnalini si spostano mandando l'evento 'token' a socket.io: il server li salva nella mappa e li manda a tutti.
-import {useEffect, useRef, useState} from 'react';
-import {ArrowLeft, DoorOpen, Eye, EyeOff, MessageSquare, Move, Plus, Sprout, Swords, Trash2, UserX, Crosshair, ZoomIn, ZoomOut} from 'lucide-react';
+import {useEffect, useMemo, useRef, useState} from 'react';
+import {ArrowLeft, DoorOpen, Eye, EyeOff, Info, MessageSquare, Move, Plus, Sprout, Swords, Trash2, UserX, Crosshair, ZoomIn, ZoomOut} from 'lucide-react';
 import {Link, useNavigate, useParams} from 'react-router-dom';
-import {api, socket, spriteUrl, useMap, useSpecies, useStore, type MapDoc} from '../api';
+import {api, socket, spriteUrl, useMap, useSpecies, useStore, useTable, type MapDoc} from '../api';
 import {drawMap, loadImage} from '../mapcore';
-import {EncounterButtons, Modal, SpeciesInput, SpriteChooser} from '../components';
-import {t, tj} from '../i18n';
-import {npcSprite} from './NpcTeams';
-import {resolveTrainerSprite, spriteForTrainer, trainerSpriteUrl} from '../trainers';
+import {EncounterButtons, Modal, SpeciesInput, SpriteChooser, useBadges} from '../components';
+import {LANG, t, tj} from '../i18n';
+import {fieldNeed, fieldPass, hasBike, reachable} from '../../../server/src/field';
+import {npcSprite, NpcTeamInfo} from './NpcTeams';
+import {badgesOf, resolveTrainerSprite, spriteForTrainer, trainerSpriteUrl} from '../trainers';
 
 /** Nome semplificato per confrontare mappa e zona (minuscole, senza parentesi né simboli). */
 const zoneKey = (n: string) => n.toLowerCase().replace(/\(.*?\)/g, '').replace(/[^a-z0-9]/g, '');
@@ -24,6 +25,14 @@ export default function MapPlay() {
   const nav = useNavigate();
   const current = useMap(mid);
   useEffect(() => { if (mid && campaign.activeMap !== mid) updateCampaign({activeMap: mid}); }, [mid]);
+  // il gruppo ha votato di passare da una porta: il server ha cambiato la mappa attiva, il Master la segue
+  // (solo ai cambi successivi: all'apertura comanda la mappa scelta dal Master)
+  const lastActive = useRef(campaign.activeMap);
+  useEffect(() => {
+    const prev = lastActive.current;
+    lastActive.current = campaign.activeMap;
+    if (campaign.activeMap && prev && campaign.activeMap !== prev && campaign.activeMap !== mid) nav(`../../${campaign.activeMap}/gioca`, {relative: 'path'});
+  }, [campaign.activeMap]);
   if (!current) return <div className="page">{current === null ? t('Caricamento…') : t('Mappa non trovata.')}</div>;
   return (
     <div className="play-page">
@@ -35,6 +44,7 @@ export default function MapPlay() {
         </select>
         <Link className="btn" to=".." relative="path">{t('Modifica')}</Link>
       </header>
+      <TableBar map={current} gm />
       <MapView map={current} gm onWarp={id => nav(`../../${id}/gioca`, {relative: 'path'})} />
     </div>
   );
@@ -71,28 +81,7 @@ function spriteImg(url: string, onLoad: () => void) {
   return img;
 }
 
-/** Caselle raggiungibili a passi (4 direzioni), senza attraversare collisioni né fermarsi su altri segnalini. */
-export function reachable(map: MapDoc, from: {x: number, y: number}, range: number, occupied: Set<string>) {
-  const coll = map.layers.find(l => l.type === 'collision');
-  const solid = new Set(map.objects.filter(o => (o.kind === 'npc' || o.kind === 'item') && !o.hidden).map(o => `${o.x},${o.y}`));
-  const blocked = (x: number, y: number) => x < 0 || y < 0 || x >= map.width || y >= map.height || !!coll?.data[y * map.width + x] || solid.has(`${x},${y}`);
-  const dist = new Map<string, number>([[`${from.x},${from.y}`, 0]]);
-  const queue = [from];
-  while (queue.length) {
-    const c = queue.shift()!;
-    const d = dist.get(`${c.x},${c.y}`)!;
-    if (d >= range) continue;
-    for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
-      const nx = c.x + dx, ny = c.y + dy, k = `${nx},${ny}`;
-      if (dist.has(k) || blocked(nx, ny)) continue;
-      dist.set(k, d + 1);
-      queue.push({x: nx, y: ny});
-    }
-  }
-  dist.delete(`${from.x},${from.y}`);
-  for (const k of occupied) dist.delete(k);
-  return new Set(dist.keys());
-}
+export {reachable};
 
 /**
  * Mappa al tavolo.
@@ -138,6 +127,9 @@ export function MapView({map, gm, myToken, onWarp}: {map: MapDoc, gm?: boolean, 
     return () => { removeEventListener('pointerdown', out); removeEventListener('keydown', esc); };
   }, [menu]);
   const [talk, setTalk] = useState<MapDoc['objects'][0] | null>(null);
+  // Master: scheda del PNG (note, ricompensa, sconfitto) aperta sopra la mappa
+  const [npcInfo, setNpcInfo] = useState<string | null>(null);
+  const challenge = (teamId: string) => { sessionStorage.setItem('pnp-team', teamId); nav(`/c/${campaign.id}/lotta`); };
   // master: «Posiziona allenatori» -> allenatore scelto da mettere con un clic (null = modalità spenta)
   const [placing, setPlacing] = useState<string | null>(null);
   // master: segnalino libero da creare (finestra aperta) e poi da mettere con un clic
@@ -148,10 +140,16 @@ export function MapView({map, gm, myToken, onWarp}: {map: MapDoc, gm?: boolean, 
   // i giocatori non ricevono a schermo i segnalini nascosti (trappole, agguati…)
   const tokens: Tok[] = (map.tokens || []).filter(t => gm || !t.hidden);
   const me = tokens.find(t => t.id === myToken);
-  const range = campaign.moveRange ?? 4;
+  // passi per turno (raddoppiati con la Bicicletta) e caselle da MN attraversabili (MN nello zaino + medaglia)
+  const meTrainer = trainer.find(t => t.id === myToken);
+  const badges = useBadges();
+  const range = (campaign.moveRange ?? 8) * (hasBike(meTrainer?.bag) ? 2 : 1);
+  const pass = fieldPass(meTrainer?.bag || '', badges.of(meTrainer), campaign.region);
   // caselle visibili in larghezza per il giocatore: come nel gioco la visuale non dipende dalla mappa
   // (una mappa piccola si vede intera con il nero attorno). Numero dispari: il personaggio resta al centro.
-  const MIN_VIEW = 9, maxView = 31;
+  // su schermi piccoli (telefono) caselle di almeno 36 px: meno caselle visibili al massimo indietro (sempre dispari)
+  const fit = Math.floor(Math.max(box.w, box.h) / 36);
+  const MIN_VIEW = 9, maxView = Math.max(MIN_VIEW, Math.min(31, fit % 2 ? fit : fit - 1));
   const [view, setView] = useState(() => { try { return +(localStorage.getItem('pnp-view2') || 19); } catch { return 19; } });
   const VIEW = Math.max(MIN_VIEW, Math.min(maxView, view));
   /** Giocatore: più o meno caselle visibili, ricordato nel browser. */
@@ -165,17 +163,27 @@ export function MapView({map, gm, myToken, onWarp}: {map: MapDoc, gm?: boolean, 
     return () => ro.disconnect();
   }, []);
 
-  // scala: il Master adatta tutta la mappa; il giocatore vede sempre VIEW caselle in larghezza, qualunque sia la mappa
+  // scala: il Master adatta tutta la mappa; il giocatore vede sempre VIEW caselle sul lato lungo dello schermo,
+  // qualunque sia la mappa: su un telefono in verticale il lato lungo è l'altezza, così non vede più mappa che dal PC
   const T = gm
     ? Math.max(4, Math.min(box.w / map.width, box.h / map.height) * zoomMul)
-    : Math.max(8, Math.floor(box.w / VIEW));
-  const viewW = gm ? map.width : VIEW;
-  // in altezza quanto entra nello schermo, al massimo 1,4 volte la larghezza (dispari, per tenere il personaggio al centro)
-  const viewH = gm ? map.height : Math.max(1, Math.min(Math.floor(box.h / T), Math.round(VIEW * 1.4)) | 1);
+    : Math.max(8, Math.floor(Math.max(box.w, box.h) / VIEW));
+  // sul lato corto quanto entra (dispari, per tenere il personaggio al centro)
+  const viewW = gm ? map.width : Math.max(1, Math.min(VIEW, Math.floor(box.w / T)) | 1);
+  const viewH = gm ? map.height : Math.max(1, Math.min(VIEW, Math.floor(box.h / T)) | 1);
   // la telecamera segue il personaggio sempre al centro, anche vicino ai bordi (fuori dalla mappa è nero)
   const cam = gm || !me ? {x: 0, y: 0} : {x: me.x - Math.floor(viewW / 2), y: me.y - Math.floor(viewH / 2)};
   const occupied = new Set(tokens.filter(t => t.id !== myToken).map(t => `${t.x},${t.y}`));
-  const moves = !gm && me && selected ? reachable(map, me, range, occupied) : null;
+  // turni attivi: muove solo chi è di turno, contando i passi da dove ha iniziato il turno
+  const {turns} = useTable();
+  const myTurn = !turns || turns.order[turns.current] === myToken;
+  const allowed = useMemo(() => {
+    if (gm || !me || !myTurn) return null;
+    const from = turns?.start || me, r = reachable(map, from, range, occupied, pass);
+    if (from.x !== me.x || from.y !== me.y) { r.add(`${from.x},${from.y}`); r.delete(`${me.x},${me.y}`); }
+    return r;
+  }, [map, me?.x, me?.y, myTurn, turns?.start?.x, turns?.start?.y, range, [...occupied].join(';'), [...pass].join()]);
+  const moves = selected ? allowed : null;
 
   useEffect(() => {
     const c = cv.current;
@@ -246,7 +254,7 @@ export function MapView({map, gm, myToken, onWarp}: {map: MapDoc, gm?: boolean, 
     ctx.font = `${Math.max(10, T * .42)}px sans-serif`; ctx.textAlign = 'center'; ctx.textBaseline = 'bottom';
     for (const o of shown.objects) {
       if (o.kind === 'warp' || (!gm && (o.hidden || o.kind !== 'npc'))) continue;
-      const icons = (o.kind === 'npc' && o.text ? '💬' : '') + (gm && o.gmText ? '⚠️' : '');
+      const icons = (o.kind === 'npc' && o.text ? '💬' : '') + (gm && o.gmText ? '⚠️' : '') + (gm && o.npcTeam && npcteam.find(t => t.id === o.npcTeam)?.defeated ? '✅' : '');
       if (icons) ctx.fillText(icons, (o.x + .5) * T, (o.y - (o.kind === 'npc' ? .45 : 0)) * T);
     }
     // puntatore laser: scia che sfuma, con il nome di chi indica
@@ -306,7 +314,6 @@ export function MapView({map, gm, myToken, onWarp}: {map: MapDoc, gm?: boolean, 
   }, [map.id]);
   const [pointer, setPointer] = useState(false); // telefono: il dito diventa un puntatore laser
   const laserHeld = useRef(false), laserLast = useRef(0);
-  const meTrainer = trainer.find(x => x.id === myToken);
   /** Manda il punto del laser a tutti (al massimo ~25 al secondo) e lo disegna subito qui. */
   function sendLaser(e: React.PointerEvent) {
     const now = performance.now();
@@ -328,7 +335,7 @@ export function MapView({map, gm, myToken, onWarp}: {map: MapDoc, gm?: boolean, 
       if (!dir || e.ctrlKey || e.metaKey || e.altKey || (e.target as HTMLElement).closest?.('input, textarea, select, [contenteditable]')) return;
       e.preventDefault();
       const x = me.x + dir[0], y = me.y + dir[1];
-      if (reachable(map, me, 1, occupied).has(`${x},${y}`)) { emitMove(me, x, y); setSelected(false); }
+      if (allowed?.has(`${x},${y}`) && reachable(map, me, 1, occupied, pass).has(`${x},${y}`)) { emitMove(me, x, y); setSelected(false); }
     };
     addEventListener('keydown', onKey);
     return () => removeEventListener('keydown', onKey);
@@ -362,6 +369,8 @@ export function MapView({map, gm, myToken, onWarp}: {map: MapDoc, gm?: boolean, 
       if (!me || p.out) { setSelected(false); return; }
       if (p.x === me.x && p.y === me.y) { setSelected(s => !s); return; }
       if (moves?.has(`${p.x},${p.y}`)) { emitMove(me, p.x, p.y); setSelected(false); return; }
+      const ft = fieldTip(p.x, p.y);
+      if (ft && !pass.has(collAt(p.x, p.y))) setTip({key: `${p.x},${p.y}`, x: e.clientX, y: e.clientY, ...ft});
       setSelected(false);
       return;
     }
@@ -398,17 +407,26 @@ export function MapView({map, gm, myToken, onWarp}: {map: MapDoc, gm?: boolean, 
     if (!dragTok) { if (e.pointerType === 'mouse') hoverTip(p, e); return; }
     if (p.x !== dragTok.x || p.y !== dragTok.y) setDragTok({...dragTok, ...p});
   }
+  /** Casella da MN (acqua, cascata nel livello collisioni; albero, masso, roccia come oggetti): cosa serve per passare. */
+  const collAt = (x: number, y: number) => map.objects.find(o => o.kind === 'obstacle' && o.x === x && o.y === y)?.field
+    || map.layers.find(l => l.type === 'collision')?.data[y * map.width + x] || 0;
+  function fieldTip(x: number, y: number) {
+    const need = fieldNeed(collAt(x, y), campaign.region, LANG);
+    if (!need) return null;
+    const badge = need.badge !== undefined ? badgesOf(campaign.region)?.[need.badge] : undefined;
+    return {title: need.label, text: badge ? t('Serve la MN {move} e la Medaglia {badge}', {move: need.move, badge}) : t('Serve la MN {move}', {move: need.move})};
+  }
   /** Tooltip della casella sotto il mouse: segnalini, PNG con il loro testo, e per il master anche oggetti, porte e note. */
   function hoverTip(p: {x: number, y: number}, e: React.PointerEvent) {
     const key = `${p.x},${p.y}`;
     if (tip?.key === key) return;
     const tk = tokens.find(k => k.x === p.x && k.y === p.y);
-    const o = map.objects.find(o => o.x === p.x && o.y === p.y && (gm || (o.kind === 'npc' && !o.hidden)));
+    const o = map.objects.find(o => o.x === p.x && o.y === p.y && o.kind !== 'obstacle' && (gm || (o.kind === 'npc' && !o.hidden)));
     const name = (o: MapDoc['objects'][0]) => npcteam.find(x => x.id === o.npcTeam)?.name || o.label || o.item || t('PNG');
     const next = tk ? {title: trainer.find(x => x.id === tk.id)?.name || tk.label, text: tk.hidden ? t('Invisibile ai giocatori') : undefined}
       : o?.kind === 'warp' ? {title: o.label || t('Porta'), text: o.toMap ? `→ ${allMaps.find(m => m.id === o.toMap)?.name || '?'}` : undefined}
       : o ? {title: name(o), text: o.kind === 'npc' ? o.text : o.kind === 'item' ? (o.hidden ? t('Oggetto nascosto') : t('Oggetto')) : undefined, gm: gm ? o.gmText : undefined}
-      : null;
+      : fieldTip(p.x, p.y);
     setTip(next && (next.text || next.gm || tk || gm) ? {key, x: e.clientX, y: e.clientY, ...next} : null);
   }
   /** Fine trascinamento: salva la nuova posizione; senza spostamento è un clic e apre il menu dell'Allenatore. */
@@ -493,6 +511,7 @@ export function MapView({map, gm, myToken, onWarp}: {map: MapDoc, gm?: boolean, 
           {tip.gm && <p className="gm-note">⚠️ {tip.gm}</p>}
         </div>
       )}
+      {npcInfo && <NpcTeamInfo teamId={npcInfo} onClose={() => setNpcInfo(null)} onChallenge={() => challenge(npcInfo)} />}
       {talk && (
         <div className="dialog-box" onClick={() => setTalk(null)}>
           <strong>{npcteam.find(x => x.id === talk.npcTeam)?.name || talk.label}</strong>
@@ -530,7 +549,8 @@ export function MapView({map, gm, myToken, onWarp}: {map: MapDoc, gm?: boolean, 
             {o.gmText && <p className="gm-note small">⚠️ {o.gmText}</p>}
             <span className="small muted">{t('Trascinalo per spostarlo')}</span>
             {o.kind === 'npc' && o.text && <button onClick={() => { setMenu(null); setTalk(o); }}><MessageSquare /> {t('Dialogo (giocatori)')}</button>}
-            {o.kind === 'npc' && o.npcTeam && <button onClick={() => { sessionStorage.setItem('pnp-team', o.npcTeam!); nav(`/c/${campaign.id}/lotta`); }}><Swords /> {t('Sfida')}</button>}
+            {o.kind === 'npc' && o.npcTeam && <button onClick={() => { setMenu(null); setNpcInfo(o.npcTeam!); }}><Info /> {t('Info')}</button>}
+            {o.kind === 'npc' && o.npcTeam && <button onClick={() => challenge(o.npcTeam!)}><Swords /> {t('Sfida')}</button>}
             {o.kind !== 'marker' && <button onClick={() => patchObj(o, {hidden: !o.hidden})}>{o.hidden ? <><Eye /> {t('Mostra ai giocatori')}</> : <><EyeOff /> {t('Nascondi ai giocatori')}</>}</button>}
             <button className="btn-danger" onClick={() => deleteObj(o)}><Trash2 /> {o.kind === 'item' ? t('Raccolto: togli dalla mappa') : t('Elimina dalla mappa')}</button></>; })()}
           {menu.zoneId && <><strong className="small">{zone.find(z => z.id === menu.zoneId)?.name || t('Zona')}</strong>
@@ -538,6 +558,58 @@ export function MapView({map, gm, myToken, onWarp}: {map: MapDoc, gm?: boolean, 
           {menu.warp && <button onClick={() => { setMenu(null); onWarp?.(menu.warp!.toMap!); }}><DoorOpen /> {menu.warp.label || t('Porta')}</button>}
         </div>
       )}
+    </div>
+  );
+}
+
+/**
+ * Barra del tavolo (Master e giocatori): voto per entrare da una porta e turni a rotazione.
+ * Il giocatore vicino a una porta può proporre di entrare: se più della metà degli Allenatori sulla mappa vota Sì,
+ * il server cambia la mappa attiva e sposta tutti. Il Master avvia/ferma i turni, forza o annulla il voto.
+ */
+export function TableBar({map, gm, myId}: {map?: MapDoc | null, gm?: boolean, myId?: string}) {
+  const {campaign, trainer, map: maps} = useStore();
+  const {vote, turns} = useTable();
+  const [err, setErr] = useState('');
+  const [secs, setSecs] = useState(() => { try { return +(localStorage.getItem('pnp-turn-secs') || 60); } catch { return 60; } });
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    if (!turns?.endsAt) return;
+    const h = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(h);
+  }, [turns?.endsAt]);
+  const call = (path: string, body: object) => { setErr(''); api(`/c/${campaign.id}/${path}`, 'POST', body).catch(e => setErr(e.message)); };
+  const name = (id?: string) => trainer.find(t => t.id === id)?.name || '?';
+  const me = map?.tokens?.find(t => t.id === myId && !t.kind);
+  const door = !gm && me && !vote ? map?.objects.find(o => o.kind === 'warp' && o.toMap && Math.abs(o.x - me.x) + Math.abs(o.y - me.y) <= 1) : undefined;
+  const whose = turns?.order[turns.current];
+  const left = turns?.endsAt ? Math.max(0, Math.ceil((turns.endsAt - now) / 1000)) : null;
+  if (!door && !vote && !turns && !gm) return null;
+  return (
+    <div className="table-bar">
+      {door && <button className="btn-primary" onClick={() => call('vote', {action: 'start', trainerId: myId, warpId: door.id})}>
+        <DoorOpen /> {t('Proponi di entrare: {door}', {door: door.label || maps.find(m => m.id === door.toMap)?.name || t('Porta')})}</button>}
+      {vote && <div className="callout row gap-s wrap">
+        <span><b>🚪 {t('{who} propone: {door}', {who: name(vote.by), door: vote.label})}</b> <span className="small muted">{t('Sì {yes} · No {no} · ne servono {need} su {all}', {yes: vote.yes.length, no: vote.no.length, need: Math.floor(vote.voters.length / 2) + 1, all: vote.voters.length})}</span></span>
+        {!gm && myId && vote.voters.includes(myId) && <>
+          <button className={`btn-s ${vote.yes.includes(myId) ? 'btn-primary' : ''}`} onClick={() => call('vote', {action: 'yes', trainerId: myId})}>{t('Sì')}</button>
+          <button className={`btn-s ${vote.no.includes(myId) ? 'btn-primary' : ''}`} onClick={() => call('vote', {action: 'no', trainerId: myId})}>{t('No')}</button>
+        </>}
+        {gm && <>
+          <button className="btn-s btn-primary" onClick={() => call('vote', {action: 'force'})}>{t('Entra ora')}</button>
+          <button className="btn-s" onClick={() => call('vote', {action: 'cancel'})}>{t('Annulla')}</button>
+        </>}
+      </div>}
+      {turns ? <div className={`row gap-s wrap small turn-bar ${whose === myId ? 'my-turn' : ''}`}>
+        <b>{whose === myId ? t('Tocca a te!') : t('Tocca a {name}', {name: name(whose)})}</b>{left !== null && <span>{left} s</span>}
+        {(gm || whose === myId) && <button className="btn-s" onClick={() => call('turns', {action: 'next', trainerId: myId, gm})}>{gm ? t('Avanti') : t('Fine turno')}</button>}
+        {gm && <button className="btn-s" onClick={() => call('turns', {action: 'off'})}>{t('Ferma i turni')}</button>}
+      </div> : gm && <div className="row gap-xs small">
+        <label className="row gap-xs">{t('Turni da')}<input type="number" min={0} max={600} value={secs} style={{width: '5em'}}
+          onChange={e => { setSecs(+e.target.value); try { localStorage.setItem('pnp-turn-secs', e.target.value); } catch {} }} />{t('s (0 = senza tempo)')}</label>
+        <button className="btn-s" onClick={() => call('turns', {action: 'on', seconds: secs})}>{t('Avvia i turni')}</button>
+      </div>}
+      {err && <span className="error small">{err}</span>}
     </div>
   );
 }

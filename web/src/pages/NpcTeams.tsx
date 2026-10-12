@@ -3,13 +3,14 @@
 // - Scheda: nome, classe, sprite, ricompensa, Pokémon, note, "già sconfitto".
 import {useMemo, useState} from 'react';
 import {Link} from 'react-router-dom';
-import {useStore, type Mon} from '../api';
-import {MonCard, MonEditor, newMon, SpriteChooser, TrainerSprite} from '../components';
+import {Swords} from 'lucide-react';
+import {api, useStore, type Mon} from '../api';
+import {Modal, MonCard, MonEditor, newMon, SpriteChooser, TrainerSprite} from '../components';
 import {NPC_CLASSES, spriteForTrainer, trainerSpriteUrl} from '../trainers';
 import {t} from '../i18n';
 
-/** Una Squadra PNG. */
-type Team = {id?: string, name: string, trainerClass?: string, sprite?: string, auto?: boolean, mons: Mon[], notes?: string, reward?: string, defeated?: boolean};
+/** Una Squadra PNG. bag = zaino usabile in lotta dal Master. */
+type Team = {id?: string, name: string, trainerClass?: string, sprite?: string, auto?: boolean, mons: Mon[], notes?: string, reward?: string, bag?: string, defeated?: boolean};
 
 /** Dove è piazzato ogni PNG: id squadra → mappe. Un PNG sta su una sola mappa. */
 export function usePlacements() {
@@ -66,6 +67,7 @@ export default function NpcTeams() {
                   <SpriteChooser value={team.sprite || ''} fallback={NPC_CLASSES.find(c => c[0] === team.trainerClass)?.[1] || ''} placeholder={t('scegli')} onChange={b => update({sprite: b})} />
                 </div>
                 <label>{t('Ricompensa')}<input defaultValue={team.reward} onBlur={e => update({reward: e.target.value})} placeholder={t('Medaglia, ₽…')} /></label>
+                <label>{t('Zaino (usabile in lotta dal Master)')}<input defaultValue={team.bag} onBlur={e => update({bag: e.target.value})} placeholder={t('Pozione x2, Antidoto')} /></label>
               </div>
             </div>
             <div className="row gap-s wrap small">
@@ -88,5 +90,39 @@ export default function NpcTeams() {
         onDelete={edit.i < team.mons.length ? () => update({mons: team.mons.filter((_, j) => j !== edit.i)}) : undefined}
         onClose={() => setEdit(null)} />}
     </div>
+  );
+}
+
+/**
+ * Scheda veloce di un PNG per il Master, aperta dalla mappa senza lasciarla: squadra, ricompensa, zaino, note
+ * (modificabili) e «Sconfitto». Segnarlo sconfitto lo scrive nel diario.
+ */
+export function NpcTeamInfo({teamId, onClose, onChallenge}: {teamId: string, onClose: () => void, onChallenge?: () => void}) {
+  const {npcteam, save, campaign} = useStore();
+  const team: Team | undefined = npcteam.find(x => x.id === teamId);
+  if (!team) return null;
+  const update = (p: Partial<Team>) => save('npcteam', {...team, ...p});
+  const who = `${team.trainerClass ? t(team.trainerClass) + ' ' : ''}${team.name}`;
+  const defeat = (on: boolean) => {
+    update({defeated: on});
+    if (on) api(`/c/${campaign.id}/log`, 'POST', {text: team.reward ? t('{who} è stato sconfitto: ricompensa {reward}.', {who, reward: team.reward}) : t('{who} è stato sconfitto.', {who}), type: 'battle'});
+  };
+  return (
+    <Modal title={who} onClose={onClose}>
+      <div className="stack" key={team.id}>
+        <div className="row gap-s">
+          <TrainerSprite trainer={{name: team.name, sprite: npcSprite(team)}} size={80} />
+          <div className="stack-xs">
+            <label className="check"><input type="checkbox" checked={!!team.defeated} onChange={e => defeat(e.target.checked)} /> {t('Sconfitto')}</label>
+            {onChallenge && !team.defeated && <button className="btn-primary btn-s" onClick={onChallenge}><Swords /> {t('Sfida')}</button>}
+          </div>
+        </div>
+        <label>{t('Ricompensa')}<input defaultValue={team.reward} onBlur={e => update({reward: e.target.value})} placeholder={t('Medaglia, ₽…')} /></label>
+        <label>{t('Zaino (usabile in lotta dal Master)')}<input defaultValue={team.bag} onBlur={e => update({bag: e.target.value})} placeholder={t('Pozione x2, Antidoto')} /></label>
+        <label>{t('Note / tattica')}<textarea rows={4} defaultValue={team.notes} onBlur={e => update({notes: e.target.value})} /></label>
+        <div className="mon-grid">{team.mons.map((m, i) => <MonCard key={i} mon={m} compact />)}</div>
+        {!team.mons.length && <p className="small muted">{t('Nessun Pokémon in squadra.')}</p>}
+      </div>
+    </Modal>
   );
 }
