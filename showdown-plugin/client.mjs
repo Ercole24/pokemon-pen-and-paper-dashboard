@@ -4,13 +4,14 @@
 // JS e dati sono serviti dal PC; immagini (sprite, effetti, sfondi) e audio arrivano da play.pokemonshowdown.com.
 // Prende la pagina generata dal build del client (caches/index-old.html) e la modifica così:
 // 0. indirizzi "//pnp-host/..." (routes.json del build) -> percorsi relativi; niente referrer;
-// 1. dopo config.js: modalità testclient (niente iframe verso play.pokemonshowdown.com), server = questo PC;
+// 1. dopo config.js: /config/pnp.js (scritto all'avvio dal container: Config.pnpBoot), modalità testclient (niente iframe verso play.pokemonshowdown.com), server = questo PC;
 // 2. dopo battledata.js: risorse e audio da play.pokemonshowdown.com;
 // 3. dopo client.js: niente login server (nomi liberi grazie a noguestsecurity), quindi
-//    nessun popup e "Choose name" rinomina direttamente con /trn; il nome resta finché la scheda è aperta;
+//    nessun popup e "Choose name" rinomina direttamente con /trn; il nome resta sul dispositivo finché Showdown non si riavvia;
 //    con ?pnpname=Nome nell'indirizzo (link dalla pagina del giocatore) il nome è già quello;
 // 4. dopo client-mainmenu.js: niente news (le scaricherebbe da pokemonshowdown.com);
-// 5. dopo client-battle.js: pulsante «Zaino» (Bag) per usare gli strumenti in lotta.
+// 5. dopo client-battle.js: pulsante «Zaino» (Bag) per usare gli strumenti in lotta; su schermi larghi lotta più grande e registro
+//    col testo più grande.
 // Corregge anche i CSS in <cartella>/style (effetti fx/ da play.pokemonshowdown.com).
 // Uso: node client.mjs <index-old.html del build> <cartella servita>   (es. server/static di Showdown)
 import {mkdirSync, readFileSync, readdirSync, writeFileSync} from 'node:fs';
@@ -45,7 +46,8 @@ let page = readFileSync(source, 'utf8')
   .replaceAll('//play.pokemonshowdown.com/', '/')
   .replace(/<script src="[^"]*clean-cookies\.php[^"]*"[^>]*><\/script>/, '') // PHP del sito ufficiale: qui servirebbe il sorgente
   .replace('<meta charset="UTF-8" />', '<meta charset="UTF-8" />\n<meta name="referrer" content="no-referrer" />');
-page = after(page, 'config/config\\.js', '<script>' + [
+// pnp.js cambia a ogni avvio ma Showdown serve i file con cache di un'ora: indirizzo sempre nuovo
+page = after(page, 'config/config\\.js', '<script>document.write(\'<script src="/config/pnp.js?\' + Date.now() + \'"><\\/script>\');</script>\n<script>' + [
   'Config.testclient = true;',
   'Config.server = {id: "pnp", host: location.hostname, port: 8000, httpport: 8000, registered: false};',
   'Config.routes.client = location.host;',
@@ -59,16 +61,20 @@ page = after(page, 'js/battledata\\.js', '<script>' + [
   '};',
 ].join('\n') + '</script>');
 page = after(page, 'oldclient/client\\.js', '<script>' + [
+  // nome ricordato dal dispositivo (localStorage) finché Showdown non si riavvia (Config.pnpBoot, da pnp.js): chi chiude la pagina
+  // e rientra, anche dal telefono, torna con lo stesso nome; sessionStorage tiene il nome della singola scheda (più schede sullo stesso PC)
+  'function pnpGetName() { try { var s = sessionStorage.getItem("pnpName"); if (s) return s; var l = JSON.parse(localStorage.getItem("pnpName") || "null"); return l && l.boot === Config.pnpBoot ? l.name : null; } catch (e) { return null; } }',
+  'function pnpSetName(n) { if (!n || /^guest/i.test(n)) return; try { sessionStorage.setItem("pnpName", n); localStorage.setItem("pnpName", JSON.stringify({name: n, boot: Config.pnpBoot})); } catch (e) {} }',
   // link dalla pagina del giocatore (…?pnpname=Nome): la scheda prende subito il nome del suo Allenatore, senza Guest da rinominare
-  'try { var pnpQ = new URLSearchParams(location.search).get("pnpname"); if (pnpQ) sessionStorage.setItem("pnpName", pnpQ.replace(/[|,;]+/g, "").slice(0, 18)); } catch (e) {}',
+  'try { var pnpQ = new URLSearchParams(location.search).get("pnpname"); if (pnpQ) pnpSetName(pnpQ.replace(/[|,;]+/g, "").slice(0, 18)); } catch (e) {}',
   // la modalità testclient sostituisce $.get/$.post con popup manuali: rimettiamo quelli normali
   '(function (get, post) { Storage.whenAppLoaded(function () { $.get = get; $.post = post; }); })($.get, $.post);',
-  // nome tenuto per tutta la vita della scheda (sessionStorage): a ogni nuova connessione (ricarica, telefono che ha chiuso
-  // il socket in background) si riprende lo stesso utente; Showdown unisce la vecchia sessione scollegata (stesso IP)
-  'Storage.whenAppLoaded(function () { app.user.on("change:name", function (u, n) { try { sessionStorage.setItem("pnpName", n); } catch (e) {} }); });',
+  // a ogni nuova connessione (ricarica, telefono che ha chiuso il socket o la pagina) si riprende lo stesso utente;
+  // Showdown unisce la vecchia sessione scollegata e lo rimette nelle sue lotte
+  'Storage.whenAppLoaded(function () { app.user.on("change:name", function (u, n) { pnpSetName(n); }); });',
   'User.prototype.receiveChallstr = function (c) {',
   '  this.challstr = c; this.loaded = true; app.topbar.updateUserbar();',
-  '  var n; try { n = sessionStorage.getItem("pnpName"); } catch (e) {}',
+  '  var n = pnpGetName();',
   '  if (n) { app.pnpReclaim = {name: n, tries: 0}; app.send("/trn " + n); }',
   '};',
   // la vecchia connessione può risultare ancora aperta per qualche secondo: "nome in uso" -> si riprova, senza popup
@@ -91,7 +97,20 @@ page = after(page, 'oldclient/client-battle\\.js', '<script>' + [
   '  this.$controls.find(".controls").append(\'<div class="pnpbag" style="clear:both;padding-top:6px"><button class="button" name="pnpBag">🎒 Bag</button></div>\');',
   '}; })(BattleRoom.prototype.updateMoveControls);',
   'BattleRoom.prototype.pnpBag = function () { this.send("/pnpbag"); };',
-].join('\n') + '</script>');
+  // schermo largo (registro accanto alla lotta): campo e comandi ingranditi (fino al 64% della larghezza, senza uscire in basso),
+  // registro a destra più stretto ma col testo più grande, leggibile da lontano. Sotto gli 830 px resta il layout di Showdown
+  '(function (layout) { BattleRoom.prototype.updateLayout = function () {',
+  '  layout.apply(this, arguments);',
+  '  var w = this.$el.width(), h = this.$el.height(), s = w >= 830 ? Math.min(w * 0.64 / 640, (h - 10) / 570) : 0;',
+  '  var big = s > 1, $side = this.$el.find(".battle-log, .battle-log-add, .battle-userlist");',
+  '  this.$el.toggleClass("pnp-big", big);',
+  '  if (!big) { $side.css("left", ""); this.$controls.css({transform: "", transformOrigin: ""}); return; }',
+  '  this.$battle.css("transform", "scale(" + s + ")"); this.$foeHint.css("transform", "scale(" + s + ")");',
+  '  this.$controls.css({top: 360 * s + 10, transform: "scale(" + s + ")", transformOrigin: "top left"});',
+  '  $side.css("left", Math.round(640 * s) + 1);',
+  '}; })(BattleRoom.prototype.updateLayout);',
+  '$(window).on("resize", function () { var r = app && app.curRoom; if (r && r.updateLayout && r.type === "battle") r.updateLayout(); });',
+].join('\n') + '</script>\n<style>.pnp-big .battle-log > .inner { zoom: 1.3; }</style>');
 page = after(page, 'oldclient/client-mainmenu\\.js', '<script>MainMenuRoom.prototype.addNews = function () {};</script>');
 
 // controllo finale: nessun tracker e nessuna risorsa caricata da fuori (i semplici link cliccabili vanno bene)

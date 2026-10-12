@@ -71,6 +71,7 @@ export default function Battle() {
 
   const [kind, setKind] = useState<'wild' | 'trainer'>('wild');
   const [zoneId, setZoneId] = useState(campaign.activeZone || zone[0]?.id || '');
+  useEffect(() => { if (campaign.activeZone) setZoneId(campaign.activeZone); }, [campaign.activeZone]); // segue la mappa al tavolo
   const [wild, setWild] = useState<Mon | null>(() => {
     const s = sessionStorage.getItem('pnp-wild');
     sessionStorage.removeItem('pnp-wild');
@@ -87,7 +88,7 @@ export default function Battle() {
   const [online, setOnline] = useState<OnlineUser[]>([]);
   const [teamUser, setTeamUser] = useState(own && fighterName || campaign.teamUser);
   const [gmUser, setGmUser] = useState(campaign.gmUser);
-  const [rotate, setRotate] = useState(false); // squadra condivisa: a ogni turno comanda un altro giocatore
+  const [rotate, setRotate] = useState(false); // squadra condivisa: ogni Pokémon avversario lo affronta un altro giocatore
   /** Chi è collegato a Showdown, ricontrollato ogni 5 secondi. */
   const refreshUsers = () => api<OnlineUser[]>('/showdown/users').then(setOnline);
   useEffect(() => { refreshUsers(); const t = setInterval(refreshUsers, 5000); return () => clearInterval(t); }, []);
@@ -118,7 +119,7 @@ export default function Battle() {
         playerMonIds: party.filter(p => chosen.includes(p.id!)).map(p => p.id!), opponent, kind, gmControls: true, teamUser, gmUser, npcTeamId: teamId, rotate: !own && rotate,
         title: kind === 'trainer' && team ? `${team.trainerClass ? t(team.trainerClass) + ' ' : ''}${team.name}` : undefined,
       });
-      window.open(`${showdownUrl()}/${roomid}`, 'showdown');
+      window.open(`${showdownUrl()}/${roomid}?pnpname=${encodeURIComponent(gmUser)}`, 'showdown');
     } catch (e: any) { setErr(e.message); }
     setBusy(false);
   }
@@ -178,7 +179,7 @@ export default function Battle() {
             ))}
           </div>
           <ShowdownSeats online={online} refresh={refreshUsers} teamLabel={own && fighterName ? t('Gioca per {name}', {name: fighterName}) : t('Gioca per la squadra')} teamUser={teamUser} setTeamUser={setTeamUser} gmUser={gmUser} setGmUser={setGmUser} />
-          {!own && <label className="check"><input type="checkbox" checked={rotate} onChange={e => setRotate(e.target.checked)} /> {t('Comando a turno: a ogni turno la squadra la comanda un altro giocatore collegato a Showdown (col nome del suo Allenatore)')}</label>}
+          {!own && <label className="check"><input type="checkbox" checked={rotate} onChange={e => setRotate(e.target.checked)} /> {t('Comando a turno: ogni Pokémon avversario lo affronta un altro giocatore collegato a Showdown (il 1° il primo Allenatore, il 2° il secondo…)')}</label>}
           {!opponent.length && <p className="small">{t(kind === 'wild' ? 'Prima genera o scegli il Pokémon selvatico.' : 'Prima scegli la squadra avversaria.')}</p>}
           {err && <p className="error">{err}</p>}
           <div className="row gap-s">
@@ -339,7 +340,7 @@ function ShowdownSeats({online, refresh, teamLabel, teamUser, setTeamUser, gmUse
   return (
     <div className="seats">
       <h3>{t('Su Showdown')}</h3>
-      {online.length === 0 && <p className="small muted">{tj('Nessuno collegato. Aprite {url} su questo PC e sul telefono di chi gioca: senza scegliere nessun nome.', {url: <a href={showdownUrl()} target="showdown">{showdownUrl()}</a>})}</p>}
+      {online.length === 0 && <p className="small muted">{tj('Nessuno collegato. {link} su questo PC; chi gioca entra dal telefono con «Apri Showdown come …» nella scheda Lotte della sua pagina.', {link: <a href={`${showdownUrl()}/?pnpname=${encodeURIComponent(gmUser)}`} target="showdown">{t('Apri Showdown come {name}', {name: gmUser})}</a>})}</p>}
       <ul className="seat-list">
         {online.map(u => (
           <li key={u.id}>

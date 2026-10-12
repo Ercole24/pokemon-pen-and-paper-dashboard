@@ -1,4 +1,4 @@
-// Movimento sulla mappa: caselle raggiungibili, mosse da campo (MN) e bicicletta, voto per le porte.
+// Movimento sulla mappa: caselle raggiungibili, mosse da campo (MN) e bicicletta, coda delle porte scelte.
 // Funzioni pure, usate dal server e dalla dashboard (come items.ts): vedi field.test.ts.
 import {parseBag} from './items.ts';
 
@@ -76,5 +76,17 @@ export function reachable(map: Grid, from: {x: number, y: number}, range: number
   return new Set(dist.keys());
 }
 
-/** Voto: passa con più della metà dei votanti. */
-export const majority = (yes: number, voters: number) => yes * 2 > voters;
+/** Gruppo in coda per una porta: chi l'ha scelta, nell'ordine in cui la porta è stata scelta la prima volta. */
+export type DoorGroup = {mapId: string, warpId: string, trainers: string[]};
+/**
+ * Un Allenatore sceglie una porta: lascia il gruppo di prima (i gruppi vuoti spariscono); stessa porta di prima = toglie la scelta;
+ * porta già scelta da altri = si unisce al loro gruppo; porta nuova = nuovo gruppo in fondo alla coda.
+ */
+export function pickDoor(queue: DoorGroup[], trainerId: string, mapId: string, warpId: string): DoorGroup[] {
+  const same = (g: DoorGroup) => g.mapId === mapId && g.warpId === warpId;
+  const had = queue.some(g => same(g) && g.trainers.includes(trainerId));
+  const out = queue.map(g => ({...g, trainers: g.trainers.filter(t => t !== trainerId)})).filter(g => g.trainers.length);
+  if (had) return out;
+  const g = out.find(same);
+  return g ? out.map(x => x === g ? {...g, trainers: [...g.trainers, trainerId]} : x) : [...out, {mapId, warpId, trainers: [trainerId]}];
+}

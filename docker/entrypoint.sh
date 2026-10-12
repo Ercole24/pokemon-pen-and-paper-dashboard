@@ -8,4 +8,7 @@ if [ -z "$PNP_SECRET" ]; then
   PNP_SECRET="$(cat "$SECRET_FILE")"
   export PNP_SECRET
 fi
+# Showdown: pnpBoot cambia a ogni avvio del container (letto dalla pagina del client, vedi client.mjs):
+# i nomi ricordati dai telefoni valgono finché Showdown non si ferma
+[ -d server/static/config ] && echo "Config.pnpBoot = \"$(date +%s)\";" > server/static/config/pnp.js
 exec "$@"

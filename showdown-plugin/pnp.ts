@@ -140,7 +140,8 @@ export const commands: Chat.ChatCommands = {
 
 	/**
 	 * Zaino in lotta. Uno dei due giocatori (Squadra = p1, Master = p2) preme «Zaino» nei comandi della lotta (vedi client.mjs): /pnpbag;
-	 * sceglie strumento e Pokémon: /pnpuse <allenatore>|<strumento>|<n. del Pokémon nella squadra>.
+	 * sceglie strumento e Pokémon: /pnpuse <allenatore>|<strumento>|<n. del Pokémon nella squadra>[|<passo>]
+	 * (Poké Ball: passo «who:<id>» = chi la lancia, «go:<id>» = lancio).
 	 * I due comandi passano solo la richiesta al bot della dashboard, che conosce gli zaini (Allenatori per p1, Squadra PNG per p2):
 	 * risponde con /pnpbagshow (l'elenco, visibile solo a chi l'ha chiesto) o con /pnpitem (applica lo strumento, firmato col segreto).
 	 */
@@ -156,8 +157,8 @@ export const commands: Chat.ChatCommands = {
 		if (!battle || battle.ended) return this.errorReply('The bag can only be used in an ongoing battle.');
 		const side = battle.p1?.id === user.id ? 'p1' : battle.p2?.id === user.id ? 'p2' : '';
 		if (!side) return this.errorReply('Only the two players of the battle can use the bag.');
-		const [trainerId, item, idx] = target.split('|');
-		Users.get(process.env.PNP_BOT || 'Arbitro')?.send(`|pnpusereq|${JSON.stringify({roomid: room.roomid, user: user.id, side, trainerId, item, idx: +idx})}`);
+		const [trainerId, item, idx, step] = target.split('|');
+		Users.get(process.env.PNP_BOT || 'Arbitro')?.send(`|pnpusereq|${JSON.stringify({roomid: room.roomid, user: user.id, side, trainerId, item, idx: +idx, step})}`);
 	},
 	/** /pnpbagshow {"secret","roomid","user","html"}: mostra (o aggiorna) il riquadro dello zaino solo a quel giocatore */
 	pnpbagshow(target, room, user, connection) {
@@ -189,7 +190,8 @@ export const commands: Chat.ChatCommands = {
 		const side = data.side === 'p2' ? 'p2' : 'p1', player = battle[side];
 		if (player) Users.get(player.id)?.sendTo(data.roomid as RoomID, '|uhtmlchange|pnpbag|');
 		const {idx, label, who, effect, txt} = data;
-		// codice eseguito nel simulatore (come per i PS in /pnpbattle: la riga ">>> codice" si toglie e la Promise non si risolve)
+		// codice eseguito nel simulatore (come per i PS in /pnpbattle: la riga ">>> codice" si toglie e la Promise non si risolve).
+		// Va su una riga sola: dentro niente commenti «//», che si mangerebbero il resto (solo /* … */)
 		const code = `battle.log.pop(); (() => {
 			const d = ${JSON.stringify({idx, label, who, effect, txt})}, e = d.effect, s = ${side};
 			const T = (k, v) => (d.txt[k] || k).replace(/[{](\\w+)[}]/g, (m, x) => v && x in v ? v[x] : m);
@@ -201,7 +203,7 @@ export const commands: Chat.ChatCommands = {
 				if (battle.allChoicesDone()) battle.commitChoices(); else s.emitRequest({wait: true, side: s.getRequestData()});
 			};
 			if (e.ball) {
-				// Poké Ball: l'esito l'ha già calcolato la dashboard (e.caught, e.text); se preso la lotta finisce qui
+				/* Poké Ball: l'esito l'ha già calcolato la dashboard (e.caught, e.text); se preso la lotta finisce qui */
 				battle.add('message', '🎒 ' + T('{who} lancia {item}!', {who: d.who, item: d.label}));
 				battle.add('message', e.text);
 				if (e.caught) battle.win(s); else pass();

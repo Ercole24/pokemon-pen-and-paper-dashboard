@@ -175,7 +175,7 @@ export function MapView({map, gm, myToken, onWarp}: {map: MapDoc, gm?: boolean, 
   const cam = gm || !me ? {x: 0, y: 0} : {x: me.x - Math.floor(viewW / 2), y: me.y - Math.floor(viewH / 2)};
   const occupied = new Set(tokens.filter(t => t.id !== myToken).map(t => `${t.x},${t.y}`));
   // turni attivi: muove solo chi è di turno, contando i passi da dove ha iniziato il turno
-  const {turns} = useTable();
+  const {turns, vote} = useTable();
   const myTurn = !turns || turns.order[turns.current] === myToken;
   const allowed = useMemo(() => {
     if (gm || !me || !myTurn) return null;
@@ -252,6 +252,23 @@ export function MapView({map, gm, myToken, onWarp}: {map: MapDoc, gm?: boolean, 
     if (above.size) drawMap(ctx, map, tileset, {zoom: zoomTiles, hidden: all, noClear: true}, redraw);
     // sopra i PNG: 💬 = ha qualcosa da dire ai giocatori, ⚠️ = note per il master (solo il master)
     ctx.font = `${Math.max(10, T * .42)}px sans-serif`; ctx.textAlign = 'center'; ctx.textBaseline = 'bottom';
+    // porte: i giocatori le vedono (cornice dorata) per scegliere dove entrare; quelle scelte sono piene, col numero di chi le ha scelte sopra
+    const groups = (vote?.queue || []).filter(g => g.mapId === map.id);
+    for (const o of shown.objects) {
+      if (o.kind !== 'warp' || !o.toMap) continue;
+      const n = groups.find(g => g.warpId === o.id)?.trainers.length || 0, x = o.x * T, y = o.y * T;
+      if (!gm || n) {
+        ctx.fillStyle = n ? 'rgba(242,194,48,.45)' : 'rgba(242,194,48,.15)';
+        ctx.strokeStyle = '#f2c230'; ctx.lineWidth = Math.max(2, T * .08);
+        ctx.beginPath(); ctx.roundRect(x + T * .08, y + T * .08, T * .84, T * .84, T * .18); ctx.fill(); ctx.stroke();
+      }
+      if (n) {
+        const fs = Math.max(9, T * .32), w = fs * 1.6;
+        ctx.fillStyle = '#16213f'; ctx.beginPath(); ctx.roundRect(x + T / 2 - w / 2, y - fs * .9, w, fs * 1.3, fs * .65); ctx.fill();
+        ctx.save(); ctx.font = `bold ${fs}px sans-serif`; ctx.fillStyle = '#f2c230'; ctx.textBaseline = 'middle';
+        ctx.fillText(String(n), x + T / 2, y - fs * .25); ctx.restore();
+      }
+    }
     for (const o of shown.objects) {
       if (o.kind === 'warp' || (!gm && (o.hidden || o.kind !== 'npc'))) continue;
       const icons = (o.kind === 'npc' && o.text ? '💬' : '') + (gm && o.gmText ? '⚠️' : '') + (gm && o.npcTeam && npcteam.find(t => t.id === o.npcTeam)?.defeated ? '✅' : '');
@@ -367,6 +384,9 @@ export function MapView({map, gm, myToken, onWarp}: {map: MapDoc, gm?: boolean, 
     setTalk(null);
     if (!gm) {
       if (!me || p.out) { setSelected(false); return; }
+      // toccare una porta = scegliere di entrare lì (di nuovo = togliere la scelta); decide il Master
+      const door = map.objects.find(o => o.kind === 'warp' && o.toMap && o.x === p.x && o.y === p.y);
+      if (door) { setSelected(false); api(`/c/${campaign.id}/vote`, 'POST', {action: 'pick', trainerId: myToken, warpId: door.id}).catch(e => alert(e.message)); return; }
       if (p.x === me.x && p.y === me.y) { setSelected(s => !s); return; }
       if (moves?.has(`${p.x},${p.y}`)) { emitMove(me, p.x, p.y); setSelected(false); return; }
       const ft = fieldTip(p.x, p.y);
@@ -564,8 +584,9 @@ export function MapView({map, gm, myToken, onWarp}: {map: MapDoc, gm?: boolean, 
 
 /**
  * Barra del tavolo (Master e giocatori): voto per entrare da una porta e turni a rotazione.
- * Il giocatore vicino a una porta può proporre di entrare: se più della metà degli Allenatori sulla mappa vota Sì,
- * il server cambia la mappa attiva e sposta tutti. Il Master avvia/ferma i turni, forza o annulla il voto.
+ * I giocatori toccano una porta sulla mappa per scegliere dove entrare; il Master vede la coda (un gruppo per porta, nell'ordine
+ * di scelta) e con un clic fa entrare un gruppo alla volta: la scena passa alla mappa d'arrivo e gli altri restano in coda.
+ * Il Master avvia/ferma i turni.
  */
 export function TableBar({map, gm, myId}: {map?: MapDoc | null, gm?: boolean, myId?: string}) {
   const {campaign, trainer, map: maps} = useStore();
@@ -580,25 +601,28 @@ export function TableBar({map, gm, myId}: {map?: MapDoc | null, gm?: boolean, my
   }, [turns?.endsAt]);
   const call = (path: string, body: object) => { setErr(''); api(`/c/${campaign.id}/${path}`, 'POST', body).catch(e => setErr(e.message)); };
   const name = (id?: string) => trainer.find(t => t.id === id)?.name || '?';
-  const me = map?.tokens?.find(t => t.id === myId && !t.kind);
-  const door = !gm && me && !vote ? map?.objects.find(o => o.kind === 'warp' && o.toMap && Math.abs(o.x - me.x) + Math.abs(o.y - me.y) <= 1) : undefined;
+  // coda delle porte scelte: un gruppo per porta (anche di mappe diverse, se il gruppo si è diviso), nell'ordine di scelta
+  const queue = vote?.queue || [];
+  const doorOf = (g: {mapId: string, warpId: string}) => maps.find(m => m.id === g.mapId)?.objects.find(o => o.id === g.warpId);
+  const doorName = (g: {mapId: string, warpId: string}) => {
+    const d = doorOf(g), to = maps.find(m => m.id === d?.toMap)?.name;
+    return d?.label && to && d.label !== to ? `${d.label} → ${to}` : d?.label || to || t('Porta');
+  };
+  const mapName = (id: string) => maps.find(m => m.id === id)?.name || '?';
+  const mine = myId ? queue.find(g => g.trainers.includes(myId)) : undefined;
   const whose = turns?.order[turns.current];
   const left = turns?.endsAt ? Math.max(0, Math.ceil((turns.endsAt - now) / 1000)) : null;
-  if (!door && !vote && !turns && !gm) return null;
+  if (!queue.length && !turns && !gm) return null;
   return (
     <div className="table-bar">
-      {door && <button className="btn-primary" onClick={() => call('vote', {action: 'start', trainerId: myId, warpId: door.id})}>
-        <DoorOpen /> {t('Proponi di entrare: {door}', {door: door.label || maps.find(m => m.id === door.toMap)?.name || t('Porta')})}</button>}
-      {vote && <div className="callout row gap-s wrap">
-        <span><b>🚪 {t('{who} propone: {door}', {who: name(vote.by), door: vote.label})}</b> <span className="small muted">{t('Sì {yes} · No {no} · ne servono {need} su {all}', {yes: vote.yes.length, no: vote.no.length, need: Math.floor(vote.voters.length / 2) + 1, all: vote.voters.length})}</span></span>
-        {!gm && myId && vote.voters.includes(myId) && <>
-          <button className={`btn-s ${vote.yes.includes(myId) ? 'btn-primary' : ''}`} onClick={() => call('vote', {action: 'yes', trainerId: myId})}>{t('Sì')}</button>
-          <button className={`btn-s ${vote.no.includes(myId) ? 'btn-primary' : ''}`} onClick={() => call('vote', {action: 'no', trainerId: myId})}>{t('No')}</button>
-        </>}
-        {gm && <>
-          <button className="btn-s btn-primary" onClick={() => call('vote', {action: 'force'})}>{t('Entra ora')}</button>
-          <button className="btn-s" onClick={() => call('vote', {action: 'cancel'})}>{t('Annulla')}</button>
-        </>}
+      {!gm && mine && <p className="small muted">{tj('Hai scelto di entrare in {door} (tocca di nuovo la porta per togliere la scelta).', {door: <b>{doorName(mine)}</b>})}</p>}
+      {queue.length > 0 && <div className="callout stack gap-xs">
+        <b>{gm && queue.length > 1 ? t('Porte scelte (il gruppo si divide: una scena alla volta):') : t('Porte scelte:')}</b>
+        {queue.map((g, i) => <div key={g.mapId + g.warpId} className="row gap-s wrap small">
+          <span>{i + 1}. <b>{g.trainers.map(name).join(', ')}</b> → {doorName(g)}{g.mapId !== map?.id && <span className="muted"> {t('(da {map})', {map: mapName(g.mapId)})}</span>}</span>
+          {gm && <button className="btn-s btn-primary" onClick={() => call('vote', {action: 'go', index: i})}><DoorOpen /> {t('Fai entrare')}</button>}
+        </div>)}
+        {gm && <div><button className="btn-s" onClick={() => call('vote', {action: 'clear'})}>{t('Svuota la coda')}</button></div>}
       </div>}
       {turns ? <div className={`row gap-s wrap small turn-bar ${whose === myId ? 'my-turn' : ''}`}>
         <b>{whose === myId ? t('Tocca a te!') : t('Tocca a {name}', {name: name(whose)})}</b>{left !== null && <span>{left} s</span>}

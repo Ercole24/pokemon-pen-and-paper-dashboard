@@ -34,6 +34,7 @@ function ManualIt({gm}: {gm: boolean}) {
             <li><b>Gli altri</b>: il nome di ogni Allenatore è sotto il suo personaggio, nel suo colore. Chi è fuori schermo ha una freccia sul bordo con la distanza (1 casella = 1 m).</li>
             <li><b>PNG e cartelli</b>: 💬 = ha qualcosa da dirti. Toccalo (o passa col mouse) per leggere.</li>
             <li><b>Puntatore laser</b>: tieni premuto il tasto destro del mouse e muovilo; sul telefono attiva il pulsante <b>⌖</b> e tocca la mappa. Tutti vedono il punto nel tuo colore.</li>
+            <li><b>Porte</b>: le porte hanno una cornice dorata. Toccane una per scegliere dove entrare (di nuovo per togliere la scelta): il numero sopra dice quanti l'hanno scelta. Vi fa entrare il Master, un gruppo alla volta.</li>
             <li>Lente − / +: vedi più o meno mappa.</li>
           </ul>
         </section>
@@ -57,8 +58,8 @@ function ManualIt({gm}: {gm: boolean}) {
         <section className="panel">
           <h2>Lotte</h2>
           <ol className="steps">
-            <li>Apri Showdown dalla scheda <b>Lotte</b>, senza scegliere un nome: in alto a destra vedi «Guest» e un numero. Dillo al Master.</li>
-            <li>Il Master ti dà il nome della squadra (anche se lo usa già qualcun altro: potete giocare in due dallo stesso nome).</li>
+            <li>Apri Showdown dalla scheda <b>Lotte</b> con «Apri Showdown come …»: entri già col nome del tuo Allenatore, che il telefono ricorda finché Showdown non si riavvia.</li>
+            <li>Il Master sceglie chi gioca per la squadra. Con il <b>comando a turno</b> ogni Pokémon avversario lo affronta un giocatore diverso.</li>
             <li>Quando inizia la lotta si apre da sola. Il banner rosso in alto la riapre.</li>
           </ol>
           <p><b>PS tra le lotte</b>: a fine lotta i PS e gli stati alterati restano. Un Pokémon KO resta KO e non entra nella lotta dopo finché non viene curato.
@@ -96,6 +97,7 @@ function ManualIt({gm}: {gm: boolean}) {
           <h2>Per il Master</h2>
           <ul>
             <li><b>Mappa in gioco</b>: trascina segnalini, PNG, oggetti e segnaposto per spostarli; un clic senza spostarli apre il menu (dialogo, sfida, nascondi, elimina).</li>
+            <li><b>Porte</b>: la barra sopra la mappa mostra la coda delle porte scelte dai giocatori, un gruppo per porta. «Fai entrare» sposta solo quel gruppo e la mappa al tavolo diventa quella d'arrivo; gli altri gruppi restano in coda. La zona degli incontri in «Lotta» segue la mappa al tavolo.</li>
             <li><b>Due testi per PNG</b> (editor della mappa): «Cosa dice ai giocatori» lo leggono loro toccandolo; «Note per il Master» lo vedi solo tu (⚠️ sulla mappa, nel menu e al passaggio del mouse).</li>
             <li><b>+ Segnalino</b>: Pokémon, PNG o trappole, anche invisibili ai giocatori (tu li vedi semitrasparenti).</li>
             <li><b>Livelli</b>: in «Squadra e PC», riga «Livelli ai giocatori»: +1, +1d4, −1 (solo quelli non ancora spesi).</li>
@@ -126,6 +128,7 @@ function ManualEn({gm}: {gm: boolean}) {
             <li><b>The others</b>: every Trainer's name is under their character, in their colour. Anyone off screen has an arrow on the edge with the distance (1 tile = 1 m).</li>
             <li><b>NPCs and signs</b>: 💬 = they have something to tell you. Tap them (or hover with the mouse) to read.</li>
             <li><b>Laser pointer</b>: hold the right mouse button and move it; on a phone turn on the <b>⌖</b> button and tap the map. Everyone sees the dot in your colour.</li>
+            <li><b>Doors</b>: doors have a golden frame. Tap one to choose where to go in (again to undo): the number above says how many chose it. The Master lets you in, one group at a time.</li>
             <li>Magnifier − / +: see more or less of the map.</li>
           </ul>
         </section>
@@ -149,8 +152,8 @@ function ManualEn({gm}: {gm: boolean}) {
         <section className="panel">
           <h2>Battles</h2>
           <ol className="steps">
-            <li>Open Showdown from the <b>Battles</b> tab without choosing a name: at the top right you see «Guest» and a number. Tell the Master.</li>
-            <li>The Master gives you the team name (even if someone else already uses it: two of you can play from the same name).</li>
+            <li>Open Showdown from the <b>Battles</b> tab with «Open Showdown as …»: you join already named after your Trainer, and the phone remembers it until Showdown restarts.</li>
+            <li>The Master picks who plays for the team. With <b>rotating control</b> each opposing Pokémon is faced by a different player.</li>
             <li>When the battle starts it opens by itself. The red banner at the top reopens it.</li>
           </ol>
           <p><b>HP between battles</b>: at the end of a battle HP and status conditions stay. A fainted Pokémon stays fainted and doesn't join the next battle until it's healed.
@@ -188,6 +191,7 @@ function ManualEn({gm}: {gm: boolean}) {
           <h2>For the Master</h2>
           <ul>
             <li><b>Map in play</b>: drag tokens, NPCs, items and markers to move them; a click without moving opens their menu (dialogue, challenge, hide, delete).</li>
+            <li><b>Doors</b>: the bar above the map shows the queue of doors chosen by players, one group per door. «Let in» moves only that group and the map at the table becomes the destination; the other groups stay queued. The encounter zone in «Battle» follows the map at the table.</li>
             <li><b>Two texts per NPC</b> (map editor): «What it says to players» is read by them when they tap it; «Notes for the Master» only you see (⚠️ on the map, in the menu and on mouse hover).</li>
             <li><b>+ Token</b>: Pokémon, NPCs or traps, even invisible to players (you see them semi-transparent).</li>
             <li><b>Levels</b>: in «Team &amp; PC», row «Levels for players»: +1, +1d4, −1 (only those not yet spent).</li>

@@ -33,7 +33,7 @@ export type BattleState = {
 /**
  * Eventi verso index.ts: 'status' (collegato/scollegato) e 'battle' (stato aggiornato), girati ai browser;
  * zaino in lotta: 'bag' (la Squadra chiede l'elenco), 'baguse' (sceglie strumento e Pokémon), 'bagresult' (usato o rifiutato);
- * 'turn' (nuovo turno: serve al comando a turno).
+ * 'foe' (entra in campo un Pokémon avversario: serve al comando a turno).
  */
 export const events = new EventEmitter();
 /** Lotte conosciute, per roomid. */
@@ -129,12 +129,12 @@ function onBattleLine(roomid: string, line: string) {
   };
   switch (p[1]) {
   case 'player': if (p[3]) b.players[p[2] as 'p1' | 'p2'] = p[3]; break;
-  case 'turn': b.turn = +p[2]; events.emit('turn', b); break;
+  case 'turn': b.turn = +p[2]; break;
   case 'switch': case 'drag': case 'replace': {
     const s = side(p[2]);
     b.active[s] = {status: '', fainted: false, hp: 100, level: 100, species: '', ...parseMon(p[2], p[3], p[4])} as SideMon;
     if (p[4]) own(p[2], parseCondition(p[4]));
-    if (s === 'p2') b.volatiles.p2 = [];
+    if (s === 'p2') { b.volatiles.p2 = []; events.emit('foe', b); }
     break;
   }
   case '-damage': case '-heal': case '-sethp': {

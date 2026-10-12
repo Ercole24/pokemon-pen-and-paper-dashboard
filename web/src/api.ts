@@ -215,9 +215,9 @@ export function useRolls() {
   return list;
 }
 
-/** Stato del tavolo (server/src/index.ts): voto per una porta e turni sulla mappa, aggiornati in tempo reale. */
+/** Stato del tavolo (server/src/index.ts): coda delle porte scelte (gruppi, vedi pickDoor) e turni sulla mappa, aggiornati in tempo reale. */
 export type Table = {
-  vote: {mapId: string, warpId: string, toMap: string, label: string, by: string, voters: string[], yes: string[], no: string[]} | null,
+  vote: {queue: {mapId: string, warpId: string, trainers: string[]}[]} | null,
   turns: {order: string[], current: number, seconds: number, endsAt?: number, start?: {x: number, y: number}} | null,
 };
 export function useTable() {

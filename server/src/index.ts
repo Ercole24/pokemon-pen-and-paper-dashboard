@@ -19,7 +19,7 @@ import {methodLabel, methodOf} from './methods.ts';
 import {fail, translate, type Lang} from './i18n.ts';
 import {trusted} from './trusted.ts';
 import {evoCheck, formatBag, isItem, itemEffect, parseBag} from './items.ts';
-import {majority, reachable} from './field.ts';
+import {pickDoor, reachable, type DoorGroup} from './field.ts';
 
 /**
  * Porta (3000 di default), server Fastify (limite 60 MB: le mappe caricate a mano viaggiano come immagini dentro il JSON)
@@ -50,6 +50,22 @@ const campaign = (cid: string) => {
  * la mappa completa si scarica solo quando la si apre (GET /api/c/<id>/map/<mappa>). layersRev cambia quando cambiano i livelli.
  */
 const liteMap = ({layers: _, ...m}: db.Doc) => m;
+const zoneKey = (n: string) => n.toLowerCase().replace(/\(.*?\)/g, '').replace(/[^a-z0-9]/g, '');
+/**
+ * Zona incontri di una mappa: quella dipinta su più caselle, altrimenti la zona con lo stesso nome della mappa
+ * (solo esterni: gli interni, con « · », non ne hanno). Serve a preselezionarla in Lotta quando cambia la mappa al tavolo.
+ */
+function mapZone(cid: string, mapId?: string): string | undefined {
+  const map = mapId && db.get(mapId);
+  if (!map) return;
+  const count = new Map<number, number>();
+  for (const v of map.layers?.find((l: any) => l.type === 'zone')?.data || []) if (v) count.set(v, (count.get(v) || 0) + 1);
+  const top = [...count].sort((a, b) => b[1] - a[1])[0];
+  if (top) return map.zoneRefs?.[top[0] - 1];
+  if (!map.name.includes(' · ')) return db.list(cid, 'zone').find((z: any) => zoneKey(z.name) === zoneKey(map.name))?.id;
+}
+/** Campagna con la nuova mappa al tavolo: la zona attiva segue la mappa (se la mappa non ne ha, resta quella di prima). */
+const withMap = (c: any, mapId?: string) => ({...c, activeMap: mapId, activeZone: mapZone(c.id, mapId) || c.activeZone});
 /** Avvisa i browser della campagna che un documento è cambiato. */
 const emitDoc = (cid: string, kind: string, doc: db.Doc) => io.to(cid).emit('doc', {kind, doc: kind === 'map' ? liteMap(doc) : doc});
 /** Salva nel database e avvisa i browser: è il modo standard di scrivere. */
@@ -88,7 +104,8 @@ const keepLevelCounters = (body: any) => {
   return {...body, levelsGiven: old?.levelsGiven, levelsSpent: old?.levelsSpent};
 };
 app.put('/api/campaigns', async req => {
-  const body: any = keepLevelCounters(req.body);
+  let body: any = keepLevelCounters(req.body);
+  if (body.id && body.activeMap && body.activeMap !== db.get(body.id)?.activeMap) body = withMap(body, body.activeMap);
   const c = db.put('_', 'campaign', {gen: 9, region: '', shinyRate: 4096, hiddenAbilityChance: 0.05,
     teamUser: langOf(req) === 'it' ? 'squadra' : 'team', gmUser: 'master', ...body});
   io.emit('campaign', c);
@@ -296,7 +313,7 @@ app.post('/api/c/:cid/battle', async req => {
     team1: dex.packTeam(mine), team2: dex.packTeam(body.opponent), title,
     hp1: mine.map(m => ({hp: m.hp ?? null, status: m.status || ''})), // PS e stato rimasti dalla lotta precedente
     meta: {cid, kind: body.kind, opponent: body.opponent, playerMonIds: mine.map(m => m.id), lang: langOf(req), npcTeamId: body.kind === 'trainer' ? body.npcTeamId : undefined,
-      // comando a turno: a ogni turno la Squadra passa al prossimo Allenatore collegato a Showdown (col suo nome)
+      // comando a turno: ogni Pokémon avversario lo affronta il prossimo Allenatore collegato a Showdown (col suo nome)
       rotate: body.rotate ? db.list(cid, 'trainer').map(t => t.name) : undefined},
   });
   log(cid, tr('Lotta iniziata: {title}', {title}), 'battle');
@@ -338,6 +355,8 @@ function catchCalc(cid: string, body: CatchBody) {
   };
   return catchResult(body.roll, input);
 }
+/** «+ 5» / «− 5» per i tiri nel diario e in lotta. */
+const signed = (n: number) => n >= 0 ? `+ ${n}` : `− ${-n}`;
 /** Cattura riuscita: il Pokémon va in squadra o nel PC; in ogni caso una riga nel diario (nella lingua di chi ha lanciato la Poké Ball). */
 function catchApply(cid: string, body: CatchBody, res: ReturnType<typeof catchResult>, lang: Lang) {
   const c = campaign(cid);
@@ -348,16 +367,19 @@ function catchApply(cid: string, body: CatchBody, res: ReturnType<typeof catchRe
     const party = db.list(cid, 'mon').filter(m => m.place === 'party' && (c.teamMode !== 'own' || (m.owner || '') === (body.trainerId || '')));
     const mon = save(cid, 'mon', {...body.wild, id: undefined, nickname: body.nickname || '', owner: body.trainerId || '',
       place: party.length < 6 ? 'party' : 'pc', caughtAt: Date.now()});
-    log(cid, tr(mon.place === 'pc' ? '{who} ha catturato {species} (LV {level}) → PC di Bill! Tiro {roll} + {bonus} = {total}' : '{who} ha catturato {species} (LV {level})! Tiro {roll} + {bonus} = {total}', {who, species: mon.species, level: mon.level, roll: res.roll, bonus: res.bonus, total: res.total}), 'catch');
+    log(cid, tr(mon.place === 'pc' ? '{who} ha catturato {species} (LV {level}) → PC di Bill! Tiro {roll} {bonus} = {total}' : '{who} ha catturato {species} (LV {level})! Tiro {roll} {bonus} = {total}', {who, species: mon.species, level: mon.level, roll: res.roll, bonus: signed(res.bonus), total: res.total}), 'catch');
     return {...res, mon};
   }
-  log(cid, tr('{who} non riesce a catturare {species}: {roll} + {bonus} = {total} (serve {need})', {who, species: body.wild.species, roll: res.roll, bonus: res.bonus, total: res.total, need: res.threshold}), 'catch');
+  log(cid, tr('{who} non riesce a catturare {species}: {roll} {bonus} = {total} (serve {need})', {who, species: body.wild.species, roll: res.roll, bonus: signed(res.bonus), total: res.total, need: res.threshold}), 'catch');
   return res;
 }
 
 // --- tavolo: voto per le porte e turni sulla mappa attiva (in memoria: un riavvio del server li azzera) ---
-/** Voto per passare da una porta: votanti = Allenatori con il segnalino sulla mappa attiva quando parte. */
-type Vote = {mapId: string, warpId: string, toMap: string, label: string, by: string, voters: string[], yes: string[], no: string[]};
+/**
+ * Porte scelte dai giocatori: coda di gruppi (porta + chi l'ha scelta), anche di mappe diverse (gruppo diviso).
+ * Il Master fa passare un gruppo alla volta; gli altri restano in coda anche se cambia la scena.
+ */
+type Vote = {queue: DoorGroup[]};
 /** Turni a rotazione: ordine degli Allenatori, di chi è il turno, da dove è partito (i passi si contano da lì), scadenza. */
 type Turns = {order: string[], current: number, seconds: number, endsAt?: number, start?: {x: number, y: number}};
 const votes = new Map<string, Vote>(), turns = new Map<string, Turns>(), turnTimers = new Map<string, NodeJS.Timeout>();
@@ -371,54 +393,49 @@ function tableMap(cid: string) {
   return {c, map, trainers: db.list(cid, 'trainer').filter(t => ids.has(t.id)).map(t => t.id as string)};
 }
 /**
- * Il gruppo passa dalla porta: la mappa d'arrivo diventa quella attiva e i segnalini degli Allenatori ci si spostano,
- * sulla casella d'arrivo della porta e quelle libere più vicine (senza casella d'arrivo li mette il Master).
+ * Gli Allenatori who (tutti se manca) passano dalla porta: la mappa d'arrivo diventa quella attiva (la scena) e i loro segnalini
+ * ci si spostano, sulla casella d'arrivo della porta e quelle libere più vicine (senza casella d'arrivo li mette il Master).
  */
-function passWarp(cid: string, v: Vote, lang: Lang) {
-  const c = campaign(cid), from = db.get(v.mapId), to = db.get(v.toMap);
-  votes.delete(cid);
+function passWarp(cid: string, mapId: string, warpId: string, lang: Lang, who?: string[]) {
+  const c = campaign(cid), from = db.get(mapId), warp = from?.objects.find((o: any) => o.id === warpId), to = warp?.toMap && db.get(warp.toMap);
   if (!from || !to) return emitTable(cid);
-  const warp = from.objects.find((o: any) => o.id === v.warpId);
-  const moving = (from.tokens || []).filter((t: any) => !t.kind);
+  const moving = (from.tokens || []).filter((t: any) => !t.kind && (!who || who.includes(t.id)));
   if (warp?.toX !== undefined && warp?.toY !== undefined) {
     const dest = {x: warp.toX, y: warp.toY};
     const others = new Set<string>((to.tokens || []).filter((t: any) => !moving.some((m: any) => m.id === t.id)).map((t: any) => `${t.x},${t.y}`));
     const spots = [`${dest.x},${dest.y}`, ...reachable(to as any, dest, 6, others)].filter(k => !others.has(k));
     const placed = moving.map((t: any, i: number) => { const [x, y] = (spots[i] || spots[0]).split(',').map(Number); return {...t, x, y}; });
     save(cid, 'map', {...to, tokens: (to.tokens || []).filter((t: any) => !moving.some((m: any) => m.id === t.id)).concat(placed)});
-    save(cid, 'map', {...db.get(v.mapId), tokens: (from.tokens || []).filter((t: any) => t.kind)});
+    save(cid, 'map', {...db.get(mapId), tokens: (from.tokens || []).filter((t: any) => !moving.some((m: any) => m.id === t.id))});
   }
-  io.emit('campaign', db.put('_', 'campaign', {...c, activeMap: v.toMap}));
-  log(cid, translate(lang, 'Il gruppo entra in {map} ({door}).', {map: to.name, door: v.label}), 'info');
+  io.emit('campaign', db.put('_', 'campaign', withMap(c, to.id)));
+  const names = who && db.list(cid, 'trainer').filter(t => who.includes(t.id)).map(t => t.name).join(', ');
+  const vars = {who: names || translate(lang, 'Il gruppo'), map: to.name, door: warp.label};
+  log(cid, translate(lang, warp.label ? (who?.length === 1 ? '{who} entra in {map} ({door}).' : '{who} entrano in {map} ({door}).')
+    : (who?.length === 1 ? '{who} entra in {map}.' : '{who} entrano in {map}.'), vars), 'info');
   const t = turns.get(cid);
   if (t) startTurn(cid, t.current); else emitTable(cid);
 }
-/** Voto: start (proporre, vicino alla porta), yes/no, cancel e force (Master). */
+/**
+ * Porte: pick (un Allenatore sulla mappa attiva sceglie una porta, vedi pickDoor), go (il Master fa passare il gruppo n. index
+ * della coda), clear (il Master svuota la coda).
+ */
 app.post('/api/c/:cid/vote', async req => {
   const {cid} = req.params as any;
-  const {action, trainerId, warpId} = req.body as {action: string, trainerId?: string, warpId?: string};
-  const v = votes.get(cid);
-  if (action === 'start') {
-    if (v) throw fail(400, 'C\'è già un voto in corso');
+  const {action, trainerId, warpId, index} = req.body as {action: string, trainerId?: string, warpId?: string, index?: number};
+  const queue = votes.get(cid)?.queue || [];
+  const set = (q: DoorGroup[]) => { if (q.length) votes.set(cid, {queue: q}); else votes.delete(cid); };
+  if (action === 'pick') {
     const {map, trainers} = tableMap(cid);
-    const me = (map.tokens || []).find((t: any) => t.id === trainerId && !t.kind);
-    const warp = map.objects.find((o: any) => o.id === warpId && o.kind === 'warp' && o.toMap);
-    if (!me || !warp) throw fail(400, 'Porta o Allenatore non trovati');
-    if (Math.abs(me.x - warp.x) + Math.abs(me.y - warp.y) > 1) throw fail(400, 'Avvicinati alla porta');
-    const to = db.get(warp.toMap);
-    const nv: Vote = {mapId: map.id, warpId: warp.id, toMap: warp.toMap, label: warp.label || to?.name || translate(langOf(req), 'Porta'), by: trainerId!, voters: trainers, yes: [trainerId!], no: []};
-    votes.set(cid, nv);
-    if (majority(nv.yes.length, nv.voters.length)) return passWarp(cid, nv, langOf(req)), table(cid);
-  } else if (action === 'yes' || action === 'no') {
-    if (!v) throw fail(400, 'Nessun voto in corso');
-    if (!v.voters.includes(trainerId!)) throw fail(400, 'Non sei sulla mappa: non voti');
-    v.yes = v.yes.filter(x => x !== trainerId); v.no = v.no.filter(x => x !== trainerId);
-    (action === 'yes' ? v.yes : v.no).push(trainerId!);
-    if (majority(v.yes.length, v.voters.length)) return passWarp(cid, v, langOf(req)), table(cid);
-    // la maggioranza non è più raggiungibile: voto chiuso
-    if (!majority(v.voters.length - v.no.length, v.voters.length)) { votes.delete(cid); log(cid, translate(langOf(req), 'Il gruppo decide di non entrare in {door}.', {door: v.label})); }
-  } else if (action === 'cancel') votes.delete(cid);
-  else if (action === 'force' && v) return passWarp(cid, v, langOf(req)), table(cid);
+    if (!trainers.includes(trainerId!)) throw fail(400, 'Non sei sulla mappa: non voti');
+    if (!map.objects.some((o: any) => o.id === warpId && o.kind === 'warp' && o.toMap)) throw fail(400, 'Porta non trovata');
+    set(pickDoor(queue, trainerId!, map.id, warpId!));
+  } else if (action === 'go') {
+    const g = queue[index ?? -1];
+    if (!g) throw fail(400, 'Gruppo non trovato');
+    set(queue.filter(x => x !== g));
+    return passWarp(cid, g.mapId, g.warpId, langOf(req), g.trainers), table(cid);
+  } else if (action === 'clear') votes.delete(cid);
   emitTable(cid);
   return table(cid);
 });
@@ -538,12 +555,16 @@ function bagOwners(b: sd.BattleState, side: Side) {
   const team = b.meta.npcTeamId && db.list(b.meta.cid, 'npcteam').find(t => t.id === b.meta.npcTeamId);
   return {kind: 'npcteam', owners: team ? [team] : [], mons: (b.meta.opponent || []) as any[], seen: b.p2mons || {}};
 }
-/** Comando a turno: al turno n comanda l'n-esimo Allenatore collegato (nell'ordine della campagna). */
-sd.events.on('turn', async (b: sd.BattleState) => {
-  if (!b.meta?.rotate?.length || b.ended) return;
+/**
+ * Comando a turno: ogni Pokémon avversario lo affronta un giocatore diverso (il 1° il primo Allenatore collegato, il 2° il secondo…);
+ * se l'avversario rimanda in campo un Pokémon già visto, torna chi lo affrontava.
+ */
+sd.events.on('foe', async (b: sd.BattleState) => {
+  if (!b.meta?.rotate?.length || b.ended || !b.active.p2) return;
   const online = new Map((await sd.onlineUsers()).map(u => [u.id, u]));
   const names = (b.meta.rotate as string[]).filter(n => online.has(n.toLowerCase().replace(/[^a-z0-9]/g, '')));
-  if (names.length) sd.control(b.roomid, names[(b.turn - 1) % names.length], b.meta.lang || 'en');
+  const i = (b.meta.opponent as dex.Mon[]).findIndex(m => [m.nickname, m.species, m.species.split('-')[0]].includes(b.active.p2!.name));
+  if (names.length) sd.control(b.roomid, names[Math.max(i, 0) % names.length], b.meta.lang || 'en');
 });
 /** Strumenti scelti e in attesa dell'esito dal simulatore, per lotta (in ordine): tolti dallo zaino solo se usati davvero. */
 type Pending = {cid: string, kind: string, ownerId: string, item: string, lang: Lang, caught?: {body: CatchBody, res: ReturnType<typeof catchResult>}};
@@ -556,7 +577,7 @@ sd.events.on('bag', ({roomid, user, side}: {roomid: string, user: string, side: 
   const tr = (s: string, vars?: Record<string, unknown>) => escHtml(translate(b.meta.lang || 'en', s, vars));
   const rows = owners.flatMap(t => parseBag(t.bag).filter(([name, n]) => n > 0 && itemEffect(name) && (!itemEffect(name)!.ball || wild)).map(([name, n]) => {
     const e = itemEffect(name)!;
-    if (e.ball) return `<div style="margin:4px 0"><b>${escHtml(name)}</b> x${n} <small>(${escHtml(t.name)})</small><br /><button class="button" name="send" value="${escHtml(`/pnpuse ${t.id}|${name}|0`)}">${tr('Lancia contro {name}', {name: b.active.p2?.species || '?'})}</button></div>`;
+    if (e.ball) return `<div style="margin:4px 0"><b>${escHtml(name)}</b> x${n} <small>(${escHtml(t.name)})</small><br /><button class="button" name="send" value="${escHtml(`/pnpuse ${t.id}|${name}|0`)}">${tr('Usa contro {name}', {name: b.active.p2?.species || '?'})}</button></div>`;
     const targets = mons.map((m, i) => {
       if (!m) return '';
       const label = m.nickname || m.species, st = seen[label];
@@ -569,31 +590,50 @@ sd.events.on('bag', ({roomid, user, side}: {roomid: string, user: string, side: 
   sd.showBag(roomid, user, `<div class="infobox"><strong>🎒 ${tr('Zaino')}</strong> <small>${tr('tocca il Pokémon su cui usarlo: usare uno strumento occupa il turno')}</small>` +
     (rows.length ? rows.join('') : `<p>${tr(side === 'p2' && !owners.length ? 'Nessuno strumento usabile in lotta (i selvatici non hanno zaino).' : 'Nessuno strumento usabile in lotta.')}</p>`) + '</div>');
 });
-sd.events.on('baguse', ({roomid, side, trainerId, item, idx}: {roomid: string, side: Side, trainerId: string, item: string, idx: number}) => {
+sd.events.on('baguse', ({roomid, user, side, trainerId, item, idx, step}: {roomid: string, user: string, side: Side, trainerId: string, item: string, idx: number, step?: string}) => {
   const b = sd.battles.get(roomid);
   if (!b?.meta?.cid || b.ended) return;
   const {kind, owners, mons} = bagOwners(b, side);
   const t = owners.find(x => x.id === trainerId);
   const effect = itemEffect(item), have = t && parseBag(t.bag).find(([name, n]) => name === item && n > 0);
   if (!t || !effect || !have || !mons[idx]) return;
-  let caught: Pending['caught'];
+  const lang: Lang = b.meta.lang || 'en';
+  let caught: Pending['caught'], who = t.name;
   if (effect.ball) {
-    // Poké Ball: tiro d100 e tabella del libretto qui; il simulatore mostra l'esito e, se preso, chiude la lotta
+    // Poké Ball, in tre passi come al tavolo: chi la lancia (who:<id>), riepilogo dei modificatori, lancio (go:<id>) = tiro d100
+    // e tabella del libretto (stato, PS, confusione, livello, bonus della Classe di chi lancia); se preso la lotta finisce
     const wild = (b.meta.opponent || [])[0], foe = b.active.p2;
     if (side !== 'p1' || b.meta.kind !== 'wild' || !wild || !foe || foe.fainted) return;
-    const body: CatchBody = {wild, trainerId: t.id, roll: 1 + Math.floor(Math.random() * 100), input: {
-      ball: effect.ball, hpPercent: foe.hp, status: foe.status || undefined, wildLevel: wild.level, ownLevel: b.active.p1?.level,
+    const tr = (s: string, vars?: Record<string, unknown>) => escHtml(translate(lang, s, vars));
+    const trainers = db.list(b.meta.cid, 'trainer');
+    const [act, id] = (step || '').split(':'), thrower = trainers.find(x => x.id === id);
+    const body = (roll: number): CatchBody => ({wild, trainerId: thrower!.id, roll, input: {
+      ball: effect.ball!, hpPercent: foe.hp, status: foe.status || undefined, wildLevel: wild.level, ownLevel: b.active.p1?.level,
       confused: b.volatiles.p2.includes('confusion'), infatuated: b.volatiles.p2.includes('Attract'),
-    }};
-    const res = catchCalc(b.meta.cid, body);
-    caught = {body, res};
+    }});
+    const cmd = (next: string) => escHtml(`/pnpuse ${t.id}|${item}|${idx}|${next}`);
+    const box = (html: string) => sd.showBag(roomid, user, `<div class="infobox"><strong>🎒 ${escHtml(item)}</strong> <small>${tr('contro {name}', {name: foe.species})}</small><br />${html}</div>`);
+    if (!thrower) {
+      return box(`<p>${tr('Chi lancia la Poké Ball?')}</p>` + trainers.map(x => `<button class="button" name="send" value="${cmd(`who:${x.id}`)}">${escHtml(x.name)}</button> `).join(''));
+    }
+    if (act !== 'go') {
+      const pre = catchCalc(b.meta.cid, body(0));
+      const mods = pre.mods.map(m => `<li>${tr(m.label)}: ${m.value >= 0 ? '+' : ''}${m.value}</li>`).join('');
+      return box(`<p>${tr('{name} lancia. Tiro d100 {bonus}: serve almeno {need} (col dado almeno {die}).', {name: thrower.name, bonus: signed(pre.bonus), need: pre.threshold, die: Math.max(1, pre.threshold - pre.bonus)})}</p>` +
+        `<ul style="margin:4px 0">${mods || `<li>${tr('nessun modificatore')}</li>`}</ul>` +
+        `<button class="button" name="send" value="${cmd(`go:${thrower.id}`)}"><b>🎲 ${tr('Lancia la Poké Ball')}</b></button> ` +
+        `<button class="button" name="send" value="${cmd('')}">${tr('Cambia chi lancia')}</button>`);
+    }
+    const res = catchCalc(b.meta.cid, body(1 + Math.floor(Math.random() * 100)));
+    caught = {body: body(res.roll), res};
+    who = thrower.name;
     effect.caught = res.caught;
-    const vars = {species: wild.species, roll: res.roll, bonus: res.bonus, total: res.total, need: res.threshold};
-    effect.text = translate(b.meta.lang || 'en', res.caught ? '✨ {species} è stato catturato! ({roll} + {bonus} = {total})'
-      : '{species} si è liberato! ({roll} + {bonus} = {total}, serviva {need})', vars);
+    const vars = {species: wild.species, roll: res.roll, bonus: signed(res.bonus), total: res.total, need: res.threshold};
+    effect.text = translate(lang, res.caught ? '✨ {species} è stato catturato! (d100 {roll} {bonus} = {total}, serviva {need})'
+      : '{species} si è liberato! (d100 {roll} {bonus} = {total}, serviva {need})', vars);
   }
-  bagPending.set(roomid, [...(bagPending.get(roomid) || []), {cid: b.meta.cid, kind, ownerId: t.id, item, lang: b.meta.lang || 'en', caught}]);
-  sd.useItem(roomid, {side, idx, label: item, who: t.name, effect, lang: b.meta.lang || 'en'});
+  bagPending.set(roomid, [...(bagPending.get(roomid) || []), {cid: b.meta.cid, kind, ownerId: t.id, item, lang, caught}]);
+  sd.useItem(roomid, {side, idx, label: item, who, effect, lang});
 });
 sd.events.on('bagresult', ({roomid, ok}: {roomid: string, ok: boolean}) => {
   const p = bagPending.get(roomid)?.shift();
