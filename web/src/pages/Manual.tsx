@@ -97,7 +97,7 @@ function ManualIt({gm}: {gm: boolean}) {
           <h2>Per il Master</h2>
           <ul>
             <li><b>Mappa in gioco</b>: trascina segnalini, PNG, oggetti e segnaposto per spostarli; un clic senza spostarli apre il menu (dialogo, sfida, nascondi, elimina).</li>
-            <li><b>Porte</b>: la barra sopra la mappa mostra la coda delle porte scelte dai giocatori, un gruppo per porta. «Fai entrare» sposta solo quel gruppo e la mappa al tavolo diventa quella d'arrivo; gli altri gruppi restano in coda. La zona degli incontri in «Lotta» segue la mappa al tavolo.</li>
+            <li><b>Porte</b>: la barra sopra la mappa mostra la coda delle porte scelte dai giocatori, un gruppo per porta. «Fai entrare» sposta solo quel gruppo e la mappa al tavolo diventa quella d'arrivo; gli altri gruppi restano in coda. Con «Porta tutti» entrano invece tutti gli Allenatori, anche quelli su altre mappe. La zona degli incontri in «Lotta» segue la mappa al tavolo.</li>
             <li><b>Due testi per PNG</b> (editor della mappa): «Cosa dice ai giocatori» lo leggono loro toccandolo; «Note per il Master» lo vedi solo tu (⚠️ sulla mappa, nel menu e al passaggio del mouse).</li>
             <li><b>+ Segnalino</b>: Pokémon, PNG o trappole, anche invisibili ai giocatori (tu li vedi semitrasparenti).</li>
             <li><b>Livelli</b>: in «Squadra e PC», riga «Livelli ai giocatori»: +1, +1d4, −1 (solo quelli non ancora spesi).</li>
@@ -191,7 +191,7 @@ function ManualEn({gm}: {gm: boolean}) {
           <h2>For the Master</h2>
           <ul>
             <li><b>Map in play</b>: drag tokens, NPCs, items and markers to move them; a click without moving opens their menu (dialogue, challenge, hide, delete).</li>
-            <li><b>Doors</b>: the bar above the map shows the queue of doors chosen by players, one group per door. «Let in» moves only that group and the map at the table becomes the destination; the other groups stay queued. The encounter zone in «Battle» follows the map at the table.</li>
+            <li><b>Doors</b>: the bar above the map shows the queue of doors chosen by players, one group per door. «Let in» moves only that group and the map at the table becomes the destination; the other groups stay queued. With «Bring everyone» all Trainers go through instead, even those on other maps. The encounter zone in «Battle» follows the map at the table.</li>
             <li><b>Two texts per NPC</b> (map editor): «What it says to players» is read by them when they tap it; «Notes for the Master» only you see (⚠️ on the map, in the menu and on mouse hover).</li>
             <li><b>+ Token</b>: Pokémon, NPCs or traps, even invisible to players (you see them semi-transparent).</li>
             <li><b>Levels</b>: in «Team &amp; PC», row «Levels for players»: +1, +1d4, −1 (only those not yet spent).</li>

@@ -393,36 +393,41 @@ function tableMap(cid: string) {
   return {c, map, trainers: db.list(cid, 'trainer').filter(t => ids.has(t.id)).map(t => t.id as string)};
 }
 /**
- * Gli Allenatori who (tutti se manca) passano dalla porta: la mappa d'arrivo diventa quella attiva (la scena) e i loro segnalini
- * ci si spostano, sulla casella d'arrivo della porta e quelle libere più vicine (senza casella d'arrivo li mette il Master).
+ * Gli Allenatori who passano dalla porta (all = tutti gli Allenatori della campagna, da qualsiasi mappa): la mappa d'arrivo
+ * diventa quella attiva (la scena) e i loro segnalini ci si spostano, sulla casella d'arrivo della porta e quelle libere più vicine
+ * (senza casella d'arrivo li mette il Master). Chi è già sulla mappa d'arrivo resta dov'è.
  */
-function passWarp(cid: string, mapId: string, warpId: string, lang: Lang, who?: string[]) {
+function passWarp(cid: string, mapId: string, warpId: string, lang: Lang, who: string[], all = false) {
   const c = campaign(cid), from = db.get(mapId), warp = from?.objects.find((o: any) => o.id === warpId), to = warp?.toMap && db.get(warp.toMap);
   if (!from || !to) return emitTable(cid);
-  const moving = (from.tokens || []).filter((t: any) => !t.kind && (!who || who.includes(t.id)));
-  if (warp?.toX !== undefined && warp?.toY !== undefined) {
+  const ids = new Set<string>(all ? db.list(cid, 'trainer').map(t => t.id as string) : who);
+  const sources = db.list(cid, 'map').filter(m => m.id !== to.id && (m.tokens || []).some((t: any) => !t.kind && ids.has(t.id)));
+  const moving = sources.flatMap(m => (m.tokens || []).filter((t: any) => !t.kind && ids.has(t.id)));
+  if (warp.toX !== undefined && warp.toY !== undefined && moving.length) {
     const dest = {x: warp.toX, y: warp.toY};
-    const others = new Set<string>((to.tokens || []).filter((t: any) => !moving.some((m: any) => m.id === t.id)).map((t: any) => `${t.x},${t.y}`));
+    const others = new Set<string>((to.tokens || []).map((t: any) => `${t.x},${t.y}`));
     const spots = [`${dest.x},${dest.y}`, ...reachable(to as any, dest, 6, others)].filter(k => !others.has(k));
     const placed = moving.map((t: any, i: number) => { const [x, y] = (spots[i] || spots[0]).split(',').map(Number); return {...t, x, y}; });
-    save(cid, 'map', {...to, tokens: (to.tokens || []).filter((t: any) => !moving.some((m: any) => m.id === t.id)).concat(placed)});
-    save(cid, 'map', {...db.get(mapId), tokens: (from.tokens || []).filter((t: any) => !moving.some((m: any) => m.id === t.id))});
+    save(cid, 'map', {...to, tokens: (to.tokens || []).concat(placed)});
+    for (const m of sources) save(cid, 'map', {...db.get(m.id), tokens: (m.tokens || []).filter((t: any) => t.kind || !ids.has(t.id))});
   }
   io.emit('campaign', db.put('_', 'campaign', withMap(c, to.id)));
-  const names = who && db.list(cid, 'trainer').filter(t => who.includes(t.id)).map(t => t.name).join(', ');
+  const names = db.list(cid, 'trainer').filter(t => ids.has(t.id)).map(t => t.name).join(', ');
   const vars = {who: names || translate(lang, 'Il gruppo'), map: to.name, door: warp.label};
-  log(cid, translate(lang, warp.label ? (who?.length === 1 ? '{who} entra in {map} ({door}).' : '{who} entrano in {map} ({door}).')
-    : (who?.length === 1 ? '{who} entra in {map}.' : '{who} entrano in {map}.'), vars), 'info');
+  const one = who.length === 1;
+  log(cid, translate(lang, all ? (warp.label ? 'Tutti entrano in {map} ({door}).' : 'Tutti entrano in {map}.')
+    : warp.label ? (one ? '{who} entra in {map} ({door}).' : '{who} entrano in {map} ({door}).')
+    : (one ? '{who} entra in {map}.' : '{who} entrano in {map}.'), vars), 'info');
   const t = turns.get(cid);
   if (t) startTurn(cid, t.current); else emitTable(cid);
 }
 /**
  * Porte: pick (un Allenatore sulla mappa attiva sceglie una porta, vedi pickDoor), go (il Master fa passare il gruppo n. index
- * della coda), clear (il Master svuota la coda).
+ * della coda; con all passano tutti gli Allenatori, ovunque siano, e la coda si svuota), clear (il Master svuota la coda).
  */
 app.post('/api/c/:cid/vote', async req => {
   const {cid} = req.params as any;
-  const {action, trainerId, warpId, index} = req.body as {action: string, trainerId?: string, warpId?: string, index?: number};
+  const {action, trainerId, warpId, index, all} = req.body as {action: string, trainerId?: string, warpId?: string, index?: number, all?: boolean};
   const queue = votes.get(cid)?.queue || [];
   const set = (q: DoorGroup[]) => { if (q.length) votes.set(cid, {queue: q}); else votes.delete(cid); };
   if (action === 'pick') {
@@ -433,8 +438,8 @@ app.post('/api/c/:cid/vote', async req => {
   } else if (action === 'go') {
     const g = queue[index ?? -1];
     if (!g) throw fail(400, 'Gruppo non trovato');
-    set(queue.filter(x => x !== g));
-    return passWarp(cid, g.mapId, g.warpId, langOf(req), g.trainers), table(cid);
+    set(all ? [] : queue.filter(x => x !== g));
+    return passWarp(cid, g.mapId, g.warpId, langOf(req), g.trainers, !!all), table(cid);
   } else if (action === 'clear') votes.delete(cid);
   emitTable(cid);
   return table(cid);

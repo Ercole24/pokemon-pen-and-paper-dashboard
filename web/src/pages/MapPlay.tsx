@@ -593,6 +593,8 @@ export function TableBar({map, gm, myId}: {map?: MapDoc | null, gm?: boolean, my
   const {vote, turns} = useTable();
   const [err, setErr] = useState('');
   const [secs, setSecs] = useState(() => { try { return +(localStorage.getItem('pnp-turn-secs') || 60); } catch { return 60; } });
+  // «Porta tutti»: «Fai entrare» sposta tutti gli Allenatori (anche da altre mappe), non solo chi ha scelto la porta
+  const [all, setAll] = useState(() => { try { return localStorage.getItem('pnp-door-all') === '1'; } catch { return false; } });
   const [now, setNow] = useState(Date.now());
   useEffect(() => {
     if (!turns?.endsAt) return;
@@ -620,9 +622,12 @@ export function TableBar({map, gm, myId}: {map?: MapDoc | null, gm?: boolean, my
         <b>{gm && queue.length > 1 ? t('Porte scelte (il gruppo si divide: una scena alla volta):') : t('Porte scelte:')}</b>
         {queue.map((g, i) => <div key={g.mapId + g.warpId} className="row gap-s wrap small">
           <span>{i + 1}. <b>{g.trainers.map(name).join(', ')}</b> → {doorName(g)}{g.mapId !== map?.id && <span className="muted"> {t('(da {map})', {map: mapName(g.mapId)})}</span>}</span>
-          {gm && <button className="btn-s btn-primary" onClick={() => call('vote', {action: 'go', index: i})}><DoorOpen /> {t('Fai entrare')}</button>}
+          {gm && <button className="btn-s btn-primary" onClick={() => call('vote', {action: 'go', index: i, all})}><DoorOpen /> {t('Fai entrare')}</button>}
         </div>)}
-        {gm && <div><button className="btn-s" onClick={() => call('vote', {action: 'clear'})}>{t('Svuota la coda')}</button></div>}
+        {gm && <div className="row gap-s wrap">
+          <label className="check small"><input type="checkbox" checked={all} onChange={e => { setAll(e.target.checked); try { localStorage.setItem('pnp-door-all', e.target.checked ? '1' : ''); } catch {} }} /> {t('Porta tutti: entrano tutti gli Allenatori, anche da altre mappe')}</label>
+          <button className="btn-s" onClick={() => call('vote', {action: 'clear'})}>{t('Svuota la coda')}</button>
+        </div>}
       </div>}
       {turns ? <div className={`row gap-s wrap small turn-bar ${whose === myId ? 'my-turn' : ''}`}>
         <b>{whose === myId ? t('Tocca a te!') : t('Tocca a {name}', {name: name(whose)})}</b>{left !== null && <span>{left} s</span>}

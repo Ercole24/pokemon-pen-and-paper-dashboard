@@ -986,4 +986,7 @@ export const EN: Record<string, string> = {
   "{who} entrano in {map}.": "{who} enter {map}.",
   "✨ {species} è stato catturato! (d100 {roll} {bonus} = {total}, serviva {need})": "✨ {species} was caught! (d100 {roll} {bonus} = {total}, needed {need})",
   "{species} si è liberato! (d100 {roll} {bonus} = {total}, serviva {need})": "{species} broke free! (d100 {roll} {bonus} = {total}, needed {need})",
+  "Tutti entrano in {map} ({door}).": "Everyone enters {map} ({door}).",
+  "Tutti entrano in {map}.": "Everyone enters {map}.",
+  "Porta tutti: entrano tutti gli Allenatori, anche da altre mappe": "Bring everyone: all Trainers go through, even from other maps",
 };
